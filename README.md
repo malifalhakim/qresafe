@@ -1,5 +1,12 @@
 # Assessing Safety Risks and Quantization-aware Safety Patching for Quantized Large Language Models
 
+<p align='center' style="text-align:center;font-size:2.5 em;">
+<b>
+    <a href="https://icml.cc/virtual/2025/poster/44278" target="_blank" style="text-decoration: none;">Paper</a>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+    <a href="https://thecommonirin.github.io/Qresafe/" target="_blank" style="text-decoration: none;">Project Page</a>
+</b>
+</p>
+
 We conduct the first systematic assessment of safety risks in quantized LLMs, scrutinizing four mainstream categories of quantization techniques across diverse settings, including varying quantization bit-widths and different quantization-assisting datasets, through well-established safety measurements. Our empirical evaluation reveals concerning safety degradation across all quantization methods and settings. We therefore propose the first quantization-aware safety patching framework, Q-resafe, to efficiently restore the safety capabilities of quantized LLMs while avoiding any adverse impact on the utility. Extensive experiments demonstrate that Q-resafe effectively restores the safety of quantized LLMs obtained from diverse quantization processes, which is almost comparable to the full-precision pre-trained model, even with harmful calibration datasets.
 
 
