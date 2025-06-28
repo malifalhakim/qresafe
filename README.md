@@ -2,8 +2,8 @@
 
 <p align='center' style="text-align:center;font-size:2.5 em;">
 <b>
-    <a href="https://icml.cc/virtual/2025/poster/44278" target="_blank" style="text-decoration: none;">Paper</a>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
-    <a href="https://thecommonirin.github.io/Qresafe/" target="_blank" style="text-decoration: none;">Project Page</a>
+    <a href="https://icml.cc/virtual/2025/poster/44278" target="_blank" style="text-decoration: none;">📑Paper</a>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+    <a href="https://thecommonirin.github.io/Qresafe/" target="_blank" style="text-decoration: none;">🛡️Project Page</a>
 </b>
 </p>
 
@@ -64,14 +64,17 @@ ACCELERATE_LOG_LEVEL=info accelerate launch --config_file configs/multi_gpu.yaml
 
 ## Reference
 
-If you find QreSafe useful or relevant to your research, you can cite their [paper]():
+If you find Q-resafe useful or relevant to your research, you can cite [📑Paper](https://www.arxiv.org/abs/2506.20251):
 
 ```
-@article{lin2023awq,
-  title={},
-  author={},
-  journal={},
-  year={}
+@misc{chen2025qresafeassessingsafetyrisks,
+      title={Q-resafe: Assessing Safety Risks and Quantization-aware Safety Patching for Quantized Large Language Models}, 
+      author={Kejia Chen and Jiawen Zhang and Jiacong Hu and Yu Wang and Jian Lou and Zunlei Feng and Mingli Song},
+      year={2025},
+      eprint={2506.20251},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2506.20251}, 
 }
 ```
 
