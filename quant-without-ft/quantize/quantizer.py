@@ -70,6 +70,42 @@ class AwqQuantizer:
             n_samples=self.max_calib_samples, max_seq_len=self.max_calib_seq_len
         )
 
+    # Add this new method to the AwqQuantizer class
+    @torch.no_grad()
+    def _calculate_safescore(self, named_linears):
+        """
+        Calculates the SNIP-based SafeScore for each weight in the model.
+        """
+        calib_data = get_calib_dataset(
+            data="walledai/AdvBench",
+            tokenizer=self.tokenizer,
+            n_samples=self.max_calib_samples,
+            max_seq_len=self.max_calib_seq_len,
+            text_column="prompt"
+        )
+        calib_data = torch.cat(calib_data, dim=0)
+        device = get_best_device()
+        self.model.to(device)
+
+        for name, module in named_linears.items():
+            module.weight.requires_grad = True
+
+        outputs = self.model(calib_data.to(device))
+        loss = -torch.nn.functional.log_softmax(outputs.logits, dim=-1).mean()
+        loss.backward()
+
+        safe_scores = {}
+        for name, module in named_linears.items():
+            if module.weight.grad is not None:
+                score = torch.abs(module.weight * module.weight.grad)
+                safe_scores[name] = score
+                module.weight.grad = None
+                module.weight.requires_grad = False
+                
+        self.model.to("cpu")
+        clear_memory()
+        return safe_scores
+
     def pseudo_quantize_tensor(self, w: torch.Tensor):
         org_w_shape = w.shape
         if self.group_size > 0:
@@ -86,9 +122,7 @@ class AwqQuantizer:
             min_int = 0
             scales = (max_val - min_val).clamp(min=1e-5) / max_int
             zeros = (-torch.round(min_val / scales)).clamp_(min_int, max_int)
-            w = (
-                torch.clamp(torch.round(w / scales) + zeros, min_int, max_int) - zeros
-            ) * scales
+            w = (torch.clamp(torch.round(w / scales) + zeros, min_int, max_int) - zeros) * scales
             zeros = zeros.view(org_w_shape[0], -1)
         else:
             max_val = w.abs().amax(dim=1, keepdim=True)
@@ -107,6 +141,7 @@ class AwqQuantizer:
 
         return w, scales, zeros
 
+
     def pseudo_dequantize_tensor(
         self, w: nn.Linear, scales: torch.Tensor, zeros: Optional[torch.Tensor] = None
     ):
@@ -124,6 +159,21 @@ class AwqQuantizer:
         return w
 
     def quantize(self):
+        print("Calculating safety-critical weights...")
+        all_linears = get_named_linears(self.model)
+        safe_scores = self._calculate_safescore(all_linears)
+
+        all_scores = torch.cat([scores.view(-1) for scores in safe_scores.values()])
+        tau = 0.6
+        threshold = torch.quantile(all_scores, 1.0 - tau)
+
+        self.safety_critical_masks = {}
+        for name, scores in safe_scores.items():
+            self.safety_critical_masks[name] = scores > threshold
+        
+        del all_scores, safe_scores
+        clear_memory()
+
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
             # Move module and inputs to correct device
             common_device = next(self.modules[i].parameters()).device
@@ -212,43 +262,87 @@ class AwqQuantizer:
 
     def _apply_quant(self, module, named_linears: Dict[str, nn.Linear]):
         for name, linear_layer in named_linears.items():
-            # NOTE: small regression in perplexity if linear layer uses .cpu().float()
+            full_layer_name = get_op_name(self.model, linear_layer)
+            mask = self.safety_critical_masks.get(full_layer_name, None)
+
             linear_layer = linear_layer.to(get_best_device()).half()
 
-            linear_layer.weight.data, scales, zeros = self.pseudo_quantize_tensor(
-                linear_layer.weight.data
-            )
+            # PATH 1: Layer contains safety-critical weights -> Apply Mixed-Precision
+            if mask is not None and torch.any(mask):
+                print(f"Applying mixed-precision quantization to {full_layer_name}")
+                
+                # 1. Isolate non-critical weights for statistics calculation
+                w_for_stats = linear_layer.weight.data.clone()
+                
+                # Temporarily replace critical weights with values that will be ignored by min/max
+                w_for_stats[mask] = torch.inf # Ignored by min()
+                min_val_unmasked = w_for_stats.amin(dim=-1, keepdim=True)
+                
+                w_for_stats[mask] = -torch.inf # Ignored by max()
+                max_val_unmasked = w_for_stats.amax(dim=-1, keepdim=True)
 
-            if self.version == "gemm":
-                scales = scales.t().contiguous()
-                if zeros is not None:
-                    zeros = zeros.t().contiguous()
-                q_linear_module = WQLinear_GEMM
+                # 2. Calculate scales and zeros correctly from ONLY non-critical weights
+                if self.zero_point:
+                    max_int = 2**self.w_bit - 1
+                    scales = (max_val_unmasked - min_val_unmasked).clamp(min=1e-5) / max_int
+                    zeros = (-torch.round(min_val_unmasked / scales)).clamp_(0, max_int)
+                else:
+                    max_val_unmasked = torch.abs(w_for_stats).amax(dim=-1, keepdim=True)
+                    max_int = 2 ** (self.w_bit - 1) - 1
+                    scales = max_val_unmasked.clamp(min=1e-5) / max_int
+                    zeros = None
 
-            elif self.version == "gemv":
-                q_linear_module = WQLinear_GEMV
+                # 3. Apply quantization to a clone of the original weights
+                w_quantized = linear_layer.weight.data.clone()
+                if self.zero_point:
+                    w_quantized = (torch.clamp(torch.round(w_quantized / scales) + zeros, 0, max_int) - zeros) * scales
+                else:
+                    min_int = -(2 ** (self.w_bit - 1))
+                    w_quantized = torch.clamp(torch.round(w_quantized / scales), min_int, max_int) * scales
+                
+                # 4. Restore the high-precision critical weights from the original tensor
+                w_quantized[mask] = linear_layer.weight.data[mask]
+                
+                # 5. Assign the final mixed-precision weight back to the layer
+                linear_layer.weight.data = w_quantized
+                
+                # NOTE: This layer remains a standard nn.Linear, ensuring standard matrix multiplication.
+                # No conversion to WQLinear happens here.
 
-            elif self.version == "marlin":
-                q_linear_module = WQLinear_Marlin
-
-            elif self.version == "gemv_fast":
-                q_linear_module = WQLinear_GEMVFast
-
+            # PATH 2: Layer is not critical -> Convert to fully quantized WQLinear
             else:
-                raise ValueError(f"Unknown version {self.version}")
+                w_quantized, scales, zeros = self.pseudo_quantize_tensor(linear_layer.weight.data)
+                
+                # This step is technically not needed if _apply_quant is the final step before packing,
+                # but we do it to ensure consistency with the search phase.
+                linear_layer.weight.data = w_quantized
 
-            q_linear = q_linear_module.from_linear(
-                linear=linear_layer,
-                w_bit=self.w_bit,
-                group_size=self.group_size,
-                init_only=False,
-                scales=scales,
-                zeros=zeros,
-            )
+                if self.version == "gemm":
+                    scales = scales.t().contiguous()
+                    if zeros is not None:
+                        zeros = zeros.t().contiguous()
+                    q_linear_module = WQLinear_GEMM
+                elif self.version == "gemv":
+                    q_linear_module = WQLinear_GEMV
+                elif self.version == "marlin":
+                    q_linear_module = WQLinear_Marlin
+                elif self.version == "gemv_fast":
+                    q_linear_module = WQLinear_GEMVFast
+                else:
+                    raise ValueError(f"Unknown version {self.version}")
+
+                q_linear = q_linear_module.from_linear(
+                    linear=linear_layer,
+                    w_bit=self.w_bit,
+                    group_size=self.group_size,
+                    init_only=False,
+                    scales=scales,
+                    zeros=zeros,
+                )
+
+                set_op_by_name(module, name, q_linear)
 
             linear_layer.cpu()
-            q_linear.to(next(module.parameters()).device)
-            set_op_by_name(module, name, q_linear)
             clear_memory()
 
     @torch.no_grad()
