@@ -70,8 +70,7 @@ class AwqQuantizer:
             n_samples=self.max_calib_samples, max_seq_len=self.max_calib_seq_len
         )
 
-    # Add this new method to the AwqQuantizer class
-    @torch.no_grad()
+
     def _calculate_safescore(self, named_linears):
         """
         Calculates the SNIP-based SafeScore for each weight in the model.
@@ -87,6 +86,8 @@ class AwqQuantizer:
         device = get_best_device()
         self.model.to(device)
 
+        self.model.train()
+
         for name, module in named_linears.items():
             module.weight.requires_grad = True
 
@@ -101,6 +102,8 @@ class AwqQuantizer:
                 safe_scores[name] = score
                 module.weight.grad = None
                 module.weight.requires_grad = False
+        
+        self.model.eval()
                 
         self.model.to("cpu")
         clear_memory()
