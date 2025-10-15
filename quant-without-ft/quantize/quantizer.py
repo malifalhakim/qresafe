@@ -204,8 +204,7 @@ class AwqQuantizer:
         indices = torch.randint(0, all_scores_cpu.numel(), (sample_size,))
         scores_sample_cpu = all_scores_cpu[indices]
 
-        device = get_best_device()
-        threshold = torch.quantile(scores_sample_cpu.to(device).float(), 1.0 - tau).cpu()
+        threshold = torch.quantile(scores_sample_cpu.float(), 1.0 - tau).cpu()
 
         del all_scores_cpu, safe_scores
         clear_memory()
