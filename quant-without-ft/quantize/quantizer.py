@@ -79,18 +79,18 @@ class AwqQuantizer:
             data="walledai/AdvBench",
             tokenizer=self.tokenizer,
             n_samples=self.max_calib_samples,
-            max_seq_len=self.max_calib_seq_len,
+            max_seq_len=256,
             text_column="prompt"
         )
         calib_data = torch.cat(calib_data, dim=0)
         device = get_best_device()
         self.model.to(device)
 
-        # Use a small batch size to prevent OOM
-        batch_size = 1  
+        batch_size = 1
         
-        # Store accumulated gradients
-        accumulated_grads = {name: torch.zeros_like(module.weight) for name, module in named_linears.items()}
+        accumulated_grads = {name: torch.zeros_like(module.weight, device='cpu') for name, module in named_linears.items()}
+
+        clear_memory()
 
         for i in tqdm(range(0, len(calib_data), batch_size), desc="Calculating Gradients"):
             batch = calib_data[i:i+batch_size].to(device)
@@ -98,23 +98,25 @@ class AwqQuantizer:
             self.model.train()
             for module in named_linears.values():
                 module.weight.requires_grad = True
+            
+            self.model.zero_grad()
 
             outputs = self.model(batch)
             loss = -torch.nn.functional.log_softmax(outputs.logits, dim=-1).mean()
             
-            # Accumulate gradients
             loss.backward()
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    accumulated_grads[name] += module.weight.grad
-                module.weight.grad = None  # Clear gradients after each batch
+                    accumulated_grads[name] += module.weight.grad.cpu()
+                module.weight.grad = None 
 
-        # Calculate SafeScore using accumulated gradients
+            clear_memory()
+
         safe_scores = {}
         for name, module in named_linears.items():
             module.weight.requires_grad = False
-            safe_scores[name] = torch.abs(module.weight.to(device) * accumulated_grads[name])
+            safe_scores[name] = torch.abs(module.weight.cpu() * accumulated_grads[name])
 
         self.model.eval()
         self.model.to("cpu")
