@@ -113,10 +113,23 @@ class AwqQuantizer:
 
             clear_memory()
 
+        print("Calculating final safety scores...")
         safe_scores = {}
-        for name, module in named_linears.items():
+        for name, module in tqdm(named_linears.items(), desc="Calculating Scores"):
             module.weight.requires_grad = False
-            safe_scores[name] = torch.abs(module.weight.cpu() * accumulated_grads[name])
+            
+            # Move one layer's gradients to GPU
+            grad_tensor = accumulated_grads[name].to(device)
+            
+            # Perform calculation on GPU
+            score = torch.abs(module.weight.to(device) * grad_tensor)
+            
+            # Move the result back to CPU to free VRAM for the next iteration
+            safe_scores[name] = score.cpu()
+            
+            # Clean up the gradient tensor from VRAM
+            del grad_tensor
+            clear_memory()
 
         self.model.eval()
         self.model.to("cpu")
