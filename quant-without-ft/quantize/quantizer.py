@@ -197,9 +197,15 @@ class AwqQuantizer:
         score_tensors = [scores.view(-1) for scores in safe_scores.values()]
         all_scores_cpu = torch.cat(score_tensors)
 
-        print("Finding threshold on GPU...")
+        print("Finding threshold via GPU-accelerated sampling...")
         tau = 0.6
-        threshold = torch.quantile(all_scores_cpu.float(), 1.0 - tau).cpu()
+
+        sample_size = min(20_000_000, all_scores_cpu.numel())
+        indices = torch.randint(0, all_scores_cpu.numel(), (sample_size,))
+        scores_sample_cpu = all_scores_cpu[indices]
+
+        device = get_best_device()
+        threshold = torch.quantile(scores_sample_cpu.to(device).float(), 1.0 - tau).cpu()
 
         del all_scores_cpu, safe_scores
         clear_memory()
