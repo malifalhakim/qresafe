@@ -198,11 +198,12 @@ class AwqQuantizer:
         all_scores_gpu = None
         
         for scores in tqdm(safe_scores.values(), desc="Concatenating scores"):
+            flat_scores = scores.view(-1).to(device)
             if all_scores_gpu is None:
-                all_scores_gpu = scores.to(device)
+                all_scores_gpu = flat_scores
             else:
-                all_scores_gpu = torch.cat([all_scores_gpu, scores.to(device)])
-            
+                all_scores_gpu = torch.cat([all_scores_gpu, flat_scores])
+
         print("Finding threshold on GPU...")
         tau = 0.6
         threshold = torch.quantile(all_scores_gpu.float(), 1.0 - tau).cpu()
