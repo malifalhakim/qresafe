@@ -86,25 +86,37 @@ class AwqQuantizer:
         device = get_best_device()
         self.model.to(device)
 
-        self.model.train()
+        # Use a small batch size to prevent OOM
+        batch_size = 1  
+        
+        # Store accumulated gradients
+        accumulated_grads = {name: torch.zeros_like(module.weight) for name, module in named_linears.items()}
 
-        for name, module in named_linears.items():
-            module.weight.requires_grad = True
+        for i in tqdm(range(0, len(calib_data), batch_size), desc="Calculating Gradients"):
+            batch = calib_data[i:i+batch_size].to(device)
 
-        outputs = self.model(calib_data.to(device))
-        loss = -torch.nn.functional.log_softmax(outputs.logits, dim=-1).mean()
-        loss.backward()
+            self.model.train()
+            for module in named_linears.values():
+                module.weight.requires_grad = True
 
+            outputs = self.model(batch)
+            loss = -torch.nn.functional.log_softmax(outputs.logits, dim=-1).mean()
+            
+            # Accumulate gradients
+            loss.backward()
+
+            for name, module in named_linears.items():
+                if module.weight.grad is not None:
+                    accumulated_grads[name] += module.weight.grad
+                module.weight.grad = None  # Clear gradients after each batch
+
+        # Calculate SafeScore using accumulated gradients
         safe_scores = {}
         for name, module in named_linears.items():
-            if module.weight.grad is not None:
-                score = torch.abs(module.weight * module.weight.grad)
-                safe_scores[name] = score
-                module.weight.grad = None
-                module.weight.requires_grad = False
-        
+            module.weight.requires_grad = False
+            safe_scores[name] = torch.abs(module.weight.to(device) * accumulated_grads[name])
+
         self.model.eval()
-                
         self.model.to("cpu")
         clear_memory()
         return safe_scores
