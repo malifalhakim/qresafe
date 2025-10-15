@@ -182,7 +182,7 @@ class AwqQuantizer:
 
         all_scores = torch.cat([scores.view(-1) for scores in safe_scores.values()])
         tau = 0.6
-        threshold = torch.quantile(all_scores, 1.0 - tau)
+        threshold = torch.quantile(all_scores.float(), 1.0 - tau)
 
         self.safety_critical_masks = {}
         for name, scores in safe_scores.items():
