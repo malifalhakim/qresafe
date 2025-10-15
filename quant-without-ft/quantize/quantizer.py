@@ -206,16 +206,16 @@ class AwqQuantizer:
         k = int(sample_size * (1.0 - tau))
         threshold = torch.topk(scores_sample_cpu.float(), k, largest=True, sorted=False)[0].min()
 
-        del all_scores_cpu, safe_scores
+        del all_scores_cpu, scores_sample_cpu
         clear_memory()
 
         print("Creating masks...")
         self.safety_critical_masks = {}
-        all_linears_scores = self._calculate_safescore(get_named_linears(self.model))
-        for name, scores in all_linears_scores.items():
+        
+        for name, scores in safe_scores.items():
             self.safety_critical_masks[name] = scores > threshold
 
-        del all_linears_scores
+        del safe_scores
         clear_memory()
 
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
