@@ -132,7 +132,7 @@ class AwqQuantizer:
             clear_memory()
 
         self.model.eval()
-        self.model.to("cpu")
+        
         clear_memory()
         return safe_scores
 
