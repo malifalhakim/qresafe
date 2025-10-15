@@ -180,18 +180,30 @@ class AwqQuantizer:
         all_linears = get_named_linears(self.model)
         safe_scores = self._calculate_safescore(all_linears)
 
-        all_scores = torch.cat([scores.view(-1) for scores in safe_scores.values()])
-        tau = 0.6
-        
-        print("Finding threshold on GPU...")
+        print("Aggregating scores on GPU...")
         device = get_best_device()
-        threshold = torch.quantile(all_scores.to(device).float(), 1.0 - tau).cpu()
-
-        self.safety_critical_masks = {}
-        for name, scores in safe_scores.items():
-            self.safety_critical_masks[name] = scores > threshold
+        all_scores_gpu = None
         
-        del all_scores, safe_scores
+        for scores in tqdm(safe_scores.values(), desc="Concatenating scores"):
+            if all_scores_gpu is None:
+                all_scores_gpu = scores.to(device)
+            else:
+                all_scores_gpu = torch.cat([all_scores_gpu, scores.to(device)])
+            
+        print("Finding threshold on GPU...")
+        tau = 0.6
+        threshold = torch.quantile(all_scores_gpu.float(), 1.0 - tau).cpu()
+        
+        del all_scores_gpu, safe_scores
+        clear_memory()
+
+        print("Creating masks...")
+        self.safety_critical_masks = {}
+        all_linears_scores = self._calculate_safescore(get_named_linears(self.model))
+        for name, scores in all_linears_scores.items():
+            self.safety_critical_masks[name] = scores > threshold
+
+        del all_linears_scores
         clear_memory()
 
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
