@@ -193,22 +193,15 @@ class AwqQuantizer:
         all_linears = get_named_linears(self.model)
         safe_scores = self._calculate_safescore(all_linears)
 
-        print("Aggregating scores on GPU...")
-        device = get_best_device()
-        all_scores_gpu = None
-        
-        for scores in tqdm(safe_scores.values(), desc="Concatenating scores"):
-            flat_scores = scores.view(-1).to(device)
-            if all_scores_gpu is None:
-                all_scores_gpu = flat_scores
-            else:
-                all_scores_gpu = torch.cat([all_scores_gpu, flat_scores])
+        print("Aggregating scores...")
+        score_tensors = [scores.view(-1) for scores in safe_scores.values()]
+        all_scores_cpu = torch.cat(score_tensors)
 
         print("Finding threshold on GPU...")
         tau = 0.6
-        threshold = torch.quantile(all_scores_gpu.float(), 1.0 - tau).cpu()
-        
-        del all_scores_gpu, safe_scores
+        threshold = torch.quantile(all_scores_cpu.float(), 1.0 - tau).cpu()
+
+        del all_scores_cpu, safe_scores
         clear_memory()
 
         print("Creating masks...")
