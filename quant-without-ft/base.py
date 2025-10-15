@@ -128,7 +128,6 @@ class BaseAWQForCausalLM(nn.Module):
         with torch.inference_mode():
             return self.model.generate(*args, **kwargs)
 
-    @torch.no_grad()
     def quantize(
         self,
         tokenizer: Annotated[

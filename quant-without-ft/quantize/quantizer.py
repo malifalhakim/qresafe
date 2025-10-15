@@ -263,6 +263,7 @@ class AwqQuantizer:
             self._apply_quant(self.modules[i], named_linears)
             clear_memory()
 
+    @torch.no_grad()
     def _apply_quant(self, module, named_linears: Dict[str, nn.Linear]):
         for name, linear_layer in named_linears.items():
             full_layer_name = get_op_name(self.model, linear_layer)
