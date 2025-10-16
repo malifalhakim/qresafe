@@ -209,14 +209,11 @@ class AwqQuantizer:
         del all_scores_cpu, scores_sample_cpu
         clear_memory()
 
-        print("Creating masks...")
-        self.safety_critical_masks = {}
+        # Store threshold and scores instead of all masks
+        self.safety_threshold = threshold
+        self.safety_scores = safe_scores  # Keep scores, delete after quantization
         
-        for name, scores in safe_scores.items():
-            self.safety_critical_masks[name] = scores > threshold
-
-        del safe_scores
-        clear_memory()
+        print(f"Safety threshold: {threshold}")
 
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
             # Move module and inputs to correct device
@@ -294,6 +291,11 @@ class AwqQuantizer:
                 self._apply_quant(self.modules[i], named_linears)
 
             clear_memory()
+    
+        # Clean up scores after quantization is complete
+        del self.safety_scores
+        self.safety_scores = None
+        clear_memory()
 
     def pack(self):
         for i in tqdm(range(len(self.modules)), desc="Packing"):
@@ -308,13 +310,26 @@ class AwqQuantizer:
     def _apply_quant(self, module, named_linears: Dict[str, nn.Linear]):
         for name, linear_layer in named_linears.items():
             full_layer_name = get_op_name(self.model, linear_layer)
-            mask = self.safety_critical_masks.get(full_layer_name, None)
+            
+            # Compute mask on-demand instead of retrieving from pre-computed dict
+            mask = None
+            if hasattr(self, 'safety_scores') and self.safety_scores is not None:
+                if full_layer_name in self.safety_scores:
+                    scores = self.safety_scores[full_layer_name]
+                    mask = scores > self.safety_threshold
+                    # Free the scores immediately after creating mask
+                    del self.safety_scores[full_layer_name]
+                    del scores
+                    clear_memory()
 
             linear_layer = linear_layer.to(get_best_device()).half()
 
             # PATH 1: Layer contains safety-critical weights -> Apply Mixed-Precision
             if mask is not None and torch.any(mask):
                 print(f"Applying mixed-precision quantization to {full_layer_name}")
+                
+                # Move mask to same device as weights
+                mask = mask.to(linear_layer.weight.device)
                 
                 # 1. Isolate non-critical weights for statistics calculation
                 w_for_stats = linear_layer.weight.data.clone()
@@ -351,15 +366,16 @@ class AwqQuantizer:
                 # 5. Assign the final mixed-precision weight back to the layer
                 linear_layer.weight.data = w_quantized
                 
-                # NOTE: This layer remains a standard nn.Linear, ensuring standard matrix multiplication.
-                # No conversion to WQLinear happens here.
-
+                # Free the mask
+                del mask, w_for_stats
+            
             # PATH 2: Layer is not critical -> Convert to fully quantized WQLinear
             else:
+                if mask is not None:
+                    del mask
+                
                 w_quantized, scales, zeros = self.pseudo_quantize_tensor(linear_layer.weight.data)
                 
-                # This step is technically not needed if _apply_quant is the final step before packing,
-                # but we do it to ensure consistency with the search phase.
                 linear_layer.weight.data = w_quantized
 
                 if self.version == "gemm":
