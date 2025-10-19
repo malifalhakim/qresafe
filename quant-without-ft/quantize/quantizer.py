@@ -104,7 +104,26 @@ class AwqQuantizer:
             outputs = self.model(batch)
             loss = -torch.nn.functional.log_softmax(outputs.logits, dim=-1).mean()
             
+            # DEBUG: Check loss value
+            if i == 0:
+                print(f"\nFirst batch loss: {loss.item():.6f}")
+                print(f"Loss requires_grad: {loss.requires_grad}")
+            
             loss.backward()
+
+            # DEBUG: Check if gradients exist
+            if i == 0:
+                grad_exists = 0
+                grad_sum = 0
+                for name, module in named_linears.items():
+                    if module.weight.grad is not None:
+                        grad_exists += 1
+                        grad_sum += module.weight.grad.abs().sum().item()
+                    else:
+                        print(f"⚠️ No gradient for {name}")
+                print(f"Gradients exist for {grad_exists}/{len(named_linears)} layers")
+                print(f"Total gradient magnitude: {grad_sum:.6f}")
+                clear_memory()
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
@@ -194,19 +213,26 @@ class AwqQuantizer:
         safe_scores = self._calculate_safescore(all_linears)
 
         print("Aggregating scores...")
-        score_tensors = [scores.view(-1) for scores in safe_scores.values()]
-        all_scores_cpu = torch.cat(score_tensors)
-
+        all_scores_tensor = self._analyze_safety_scores(safe_scores)
+        
+        if all_scores_tensor.max() < 1e-8:
+            print("\n⚠️ WARNING: All safety scores are near zero!")
+            print("This might indicate:")
+            print("1. Gradient calculation issue")
+            print("2. Model not properly loaded")
+            print("3. Loss function not working correctly")
+            input("Press Enter to continue or Ctrl+C to abort...")
+        
         print("Finding threshold via sampling and sorting...")
         tau = 0.6
-        sample_size = min(1_000_000, all_scores_cpu.numel())
-        indices = torch.randint(0, all_scores_cpu.numel(), (sample_size,))
+        sample_size = min(1_000_000, all_scores_tensor.numel())
+        indices = torch.randint(0, all_scores_tensor.numel(), (sample_size,))
         
-        scores_sample_cpu = all_scores_cpu[indices]
+        scores_sample_cpu = all_scores_tensor[indices]
         k = int(sample_size * (1.0 - tau))
         threshold = torch.topk(scores_sample_cpu.float(), k, largest=True, sorted=False)[0].min()
 
-        del all_scores_cpu, scores_sample_cpu
+        del all_scores_tensor, scores_sample_cpu
         clear_memory()
 
         # Store threshold and scores instead of all masks
@@ -824,3 +850,77 @@ class AwqQuantizer:
             if k in module_signature:
                 sanitized_kwargs[k] = v
         return sanitized_kwargs
+
+    def _analyze_safety_scores(self, safe_scores):
+        """
+        Analyze and visualize the distribution of safety scores
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        
+        print("\n=== Safety Score Analysis ===")
+        
+        all_scores = torch.cat([scores.view(-1) for scores in safe_scores.values()])
+        
+        # Basic statistics
+        print(f"Total weights: {all_scores.numel():,}")
+        print(f"Min score: {all_scores.min().item():.6f}")
+        print(f"Max score: {all_scores.max().item():.6f}")
+        print(f"Mean score: {all_scores.mean().item():.6f}")
+        print(f"Median score: {all_scores.median().item():.6f}")
+        print(f"Std score: {all_scores.std().item():.6f}")
+        
+        # Percentiles
+        percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
+        for p in percentiles:
+            val = torch.quantile(all_scores.float(), p/100)
+            print(f"{p}th percentile: {val.item():.6f}")
+        
+        # Count zeros and very small values
+        zero_count = (all_scores == 0).sum().item()
+        near_zero_count = (all_scores.abs() < 1e-6).sum().item()
+        print(f"\nZero values: {zero_count:,} ({100*zero_count/all_scores.numel():.2f}%)")
+        print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/all_scores.numel():.2f}%)")
+        
+        # Plot histogram
+        plt.figure(figsize=(12, 4))
+        
+        plt.subplot(1, 3, 1)
+        plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black')
+        plt.xlabel('Safety Score')
+        plt.ylabel('Frequency')
+        plt.title('Safety Score Distribution')
+        plt.yscale('log')
+        
+        plt.subplot(1, 3, 2)
+        plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black', cumulative=True, density=True)
+        plt.xlabel('Safety Score')
+        plt.ylabel('Cumulative Probability')
+        plt.title('Cumulative Distribution')
+        plt.grid(True, alpha=0.3)
+        
+        plt.subplot(1, 3, 3)
+        # Remove zeros for log scale
+        non_zero_scores = all_scores[all_scores > 0]
+        if non_zero_scores.numel() > 0:
+            plt.hist(non_zero_scores.cpu().numpy(), bins=100, edgecolor='black')
+            plt.xlabel('Safety Score')
+            plt.ylabel('Frequency')
+            plt.title('Non-Zero Scores (Log Scale)')
+            plt.xscale('log')
+            plt.yscale('log')
+        
+        plt.tight_layout()
+        plt.savefig('safety_score_distribution.png', dpi=300, bbox_inches='tight')
+        print(f"\nPlot saved as 'safety_score_distribution.png'")
+        plt.close()
+        
+        # Per-layer analysis
+        print("\n=== Per-Layer Statistics ===")
+        for name, scores in safe_scores.items():
+            layer_mean = scores.mean().item()
+            layer_max = scores.max().item()
+            layer_std = scores.std().item()
+            print(f"{name}: mean={layer_mean:.6f}, max={layer_max:.6f}, std={layer_std:.6f}")
+        
+        return all_scores
