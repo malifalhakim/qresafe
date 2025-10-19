@@ -877,74 +877,156 @@ class AwqQuantizer:
 
     def _analyze_safety_scores(self, safe_scores):
         """
-        Analyze and visualize the distribution of safety scores
+        Memory-efficient analysis of safety score distribution
         """
+        print("\n=== Safety Score Analysis ===")
+        
+        # Calculate statistics WITHOUT concatenating all scores
+        total_weights = sum(scores.numel() for scores in safe_scores.values())
+        print(f"Total weights: {total_weights:,}")
+        
+        # Find global min/max by iterating through layers
+        global_min = float('inf')
+        global_max = float('-inf')
+        
+        for scores in safe_scores.values():
+            global_min = min(global_min, scores.min().item())
+            global_max = max(global_max, scores.max().item())
+        
+        print(f"Min score: {global_min:.6f}")
+        print(f"Max score: {global_max:.6f}")
+        
+        # Calculate mean incrementally (Welford's online algorithm)
+        running_sum = 0.0
+        for scores in safe_scores.values():
+            running_sum += scores.sum().item()
+        mean_score = running_sum / total_weights
+        print(f"Mean score: {mean_score:.6f}")
+        
+        # Count zeros efficiently
+        zero_count = 0
+        near_zero_count = 0
+        for scores in safe_scores.values():
+            zero_count += (scores == 0).sum().item()
+            near_zero_count += (scores.abs() < 1e-6).sum().item()
+        
+        print(f"Zero values: {zero_count:,} ({100*zero_count/total_weights:.2f}%)")
+        print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/total_weights:.2f}%)")
+        
+        # Sample for histogram (much more memory efficient)
+        print("\n=== Creating Distribution Plot ===")
+        sample_size = min(10_000_000, total_weights)  # Sample 10M weights max
+        print(f"Sampling {sample_size:,} weights for visualization...")
+        
+        # Reservoir sampling to get uniform random sample across all layers
+        sampled_scores = []
+        seen = 0
+        
+        for scores in safe_scores.values():
+            scores_flat = scores.view(-1)
+            layer_size = scores_flat.numel()
+            
+            # Determine how many to sample from this layer
+            if seen + layer_size <= sample_size:
+                # Take all from this layer
+                sampled_scores.append(scores_flat.cpu())
+                seen += layer_size
+            else:
+                # Randomly sample from this layer
+                remaining = sample_size - seen
+                if remaining > 0:
+                    indices = torch.randperm(layer_size)[:remaining]
+                    sampled_scores.append(scores_flat[indices].cpu())
+                    seen = sample_size
+                    break
+        
+        # Concatenate only the sampled scores
+        sampled_scores = torch.cat(sampled_scores)
+        
+        print(f"Computing percentiles on {sampled_scores.numel():,} samples...")
+        percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
+        for p in percentiles:
+            val = torch.quantile(sampled_scores.float(), p/100)
+            print(f"{p}th percentile: {val.item():.6f}")
+        
+        # Create histogram with sampled data
         import matplotlib.pyplot as plt
         import numpy as np
         
-        print("\n=== Safety Score Analysis ===")
+        plt.figure(figsize=(12, 4))
         
-        all_scores = torch.cat([scores.view(-1) for scores in safe_scores.values()])
+        # Convert to numpy for plotting
+        scores_np = sampled_scores.numpy()
         
-        # Basic statistics
-        print(f"Total weights: {all_scores.numel():,}")
-        print(f"Min score: {all_scores.min().item():.6f}")
-        print(f"Max score: {all_scores.max().item():.6f}")
-        # print(f"Mean score: {all_scores.mean().item():.6f}")
-        # print(f"Median score: {all_scores.median().item():.6f}")
-        # print(f"Std score: {all_scores.std().item():.6f}")
+        plt.subplot(1, 3, 1)
+        plt.hist(scores_np, bins=100, edgecolor='black', alpha=0.7)
+        plt.xlabel('Safety Score')
+        plt.ylabel('Frequency')
+        plt.title(f'Safety Score Distribution (n={len(scores_np):,})')
+        plt.yscale('log')
         
-        # # Percentiles
-        # percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
-        # for p in percentiles:
-        #     val = torch.quantile(all_scores.float(), p/100)
-        #     print(f"{p}th percentile: {val.item():.6f}")
+        plt.subplot(1, 3, 2)
+        plt.hist(scores_np, bins=100, edgecolor='black', cumulative=True, 
+                 density=True, alpha=0.7, color='green')
+        plt.xlabel('Safety Score')
+        plt.ylabel('Cumulative Probability')
+        plt.title('Cumulative Distribution')
+        plt.grid(True, alpha=0.3)
         
-        # # Count zeros and very small values
-        # zero_count = (all_scores == 0).sum().item()
-        # near_zero_count = (all_scores.abs() < 1e-6).sum().item()
-        # print(f"\nZero values: {zero_count:,} ({100*zero_count/all_scores.numel():.2f}%)")
-        # print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/all_scores.numel():.2f}%)")
+        plt.subplot(1, 3, 3)
+        # Remove zeros for log scale
+        non_zero_scores = scores_np[scores_np > 0]
+        if len(non_zero_scores) > 0:
+            plt.hist(non_zero_scores, bins=100, edgecolor='black', alpha=0.7, color='orange')
+            plt.xlabel('Safety Score')
+            plt.ylabel('Frequency')
+            plt.title('Non-Zero Scores Only')
+            plt.xscale('log')
+            plt.yscale('log')
         
-        # # Plot histogram
-        # plt.figure(figsize=(12, 4))
+        plt.tight_layout()
+        plt.savefig('safety_score_distribution.png', dpi=150, bbox_inches='tight')
+        print(f"\nPlot saved as 'safety_score_distribution.png'")
+        plt.close()
         
-        # plt.subplot(1, 3, 1)
-        # plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black')
-        # plt.xlabel('Safety Score')
-        # plt.ylabel('Frequency')
-        # plt.title('Safety Score Distribution')
-        # plt.yscale('log')
+        # Per-layer summary (top 10 layers by max score)
+        print("\n=== Top 10 Layers by Max Score ===")
+        layer_stats = []
+        for name, scores in safe_scores.items():
+            layer_stats.append({
+                'name': name,
+                'max': scores.max().item(),
+                'mean': scores.mean().item(),
+            })
         
-        # plt.subplot(1, 3, 2)
-        # plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black', cumulative=True, density=True)
-        # plt.xlabel('Safety Score')
-        # plt.ylabel('Cumulative Probability')
-        # plt.title('Cumulative Distribution')
-        # plt.grid(True, alpha=0.3)
+        layer_stats.sort(key=lambda x: x['max'], reverse=True)
+        for i, stat in enumerate(layer_stats[:10]):
+            print(f"{i+1}. {stat['name']}")
+            print(f"   Max: {stat['max']:.6f}, Mean: {stat['mean']:.6f}")
         
-        # plt.subplot(1, 3, 3)
-        # # Remove zeros for log scale
-        # non_zero_scores = all_scores[all_scores > 0]
-        # if non_zero_scores.numel() > 0:
-        #     plt.hist(non_zero_scores.cpu().numpy(), bins=100, edgecolor='black')
-        #     plt.xlabel('Safety Score')
-        #     plt.ylabel('Frequency')
-        #     plt.title('Non-Zero Scores (Log Scale)')
-        #     plt.xscale('log')
-        #     plt.yscale('log')
+        # Free memory
+        del sampled_scores
+        clear_memory()
         
-        # plt.tight_layout()
-        # plt.savefig('safety_score_distribution.png', dpi=300, bbox_inches='tight')
-        # print(f"\nPlot saved as 'safety_score_distribution.png'")
-        # plt.close()
+        # Return a small sample for threshold calculation
+        # Sample again to avoid keeping large tensor in memory
+        sample_for_threshold = []
+        sample_size_threshold = min(1_000_000, total_weights)
+        seen = 0
         
-        # # Per-layer analysis
-        # print("\n=== Per-Layer Statistics ===")
-        # for name, scores in safe_scores.items():
-        #     layer_mean = scores.mean().item()
-        #     layer_max = scores.max().item()
-        #     layer_std = scores.std().item()
-        #     print(f"{name}: mean={layer_mean:.6f}, max={layer_max:.6f}, std={layer_std:.6f}")
+        for scores in safe_scores.values():
+            scores_flat = scores.view(-1)
+            layer_size = scores_flat.numel()
+            
+            if seen + layer_size <= sample_size_threshold:
+                sample_for_threshold.append(scores_flat.cpu())
+                seen += layer_size
+            else:
+                remaining = sample_size_threshold - seen
+                if remaining > 0:
+                    indices = torch.randperm(layer_size)[:remaining]
+                    sample_for_threshold.append(scores_flat[indices].cpu())
+                    seen = sample_size_threshold
+                break
         
-        return all_scores
+        return torch.cat(sample_for_threshold)
