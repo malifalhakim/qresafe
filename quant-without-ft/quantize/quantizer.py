@@ -74,7 +74,15 @@ class AwqQuantizer:
     def _calculate_safescore(self, named_linears):
         """
         Calculates the SNIP-based SafeScore for each weight in the model.
+        Excludes lm_head and embedding layers.
         """
+        filtered_linears = {
+            name: module for name, module in named_linears.items()
+            if not any(exclude in name.lower() for exclude in ['lm_head', 'embed', 'wte', 'wpe'])
+        }
+        
+        print(f"Calculating safety scores for {len(filtered_linears)} layers (excluded {len(named_linears) - len(filtered_linears)} special layers)")
+        
         calib_data = get_calib_dataset(
             data="walledai/AdvBench",
             tokenizer=self.tokenizer,
@@ -89,7 +97,7 @@ class AwqQuantizer:
         batch_size = 1
         
         accumulated_grads = {name: torch.zeros_like(module.weight, device='cpu') 
-                             for name, module in named_linears.items()}
+                             for name, module in filtered_linears.items()}
 
         clear_memory()
 
@@ -98,33 +106,27 @@ class AwqQuantizer:
 
             self.model.train()
             
-            # Enable gradients for all linear layers
-            for module in named_linears.values():
+            for module in filtered_linears.values():
                 module.weight.requires_grad = True
             
             self.model.zero_grad()
 
-            # Forward pass
             outputs = self.model(batch)
             logits = outputs.logits
             
-            # Create target labels (predict next token)
-            # Shift labels to align with predictions
             if batch.size(1) > 1:
                 labels = batch[:, 1:].contiguous()
                 logits = logits[:, :-1, :].contiguous()
             else:
-                # For single token, use the same token as target
                 labels = batch
             
-            # Flatten for loss calculation
             loss = torch.nn.functional.cross_entropy(
                 logits.view(-1, logits.size(-1)),
                 labels.view(-1),
                 reduction='mean'
             )
             
-            # DEBUG: Check loss value
+        
             if i == 0:
                 print(f"\nFirst batch loss: {loss.item():.6f}")
                 print(f"Loss requires_grad: {loss.requires_grad}")
@@ -132,24 +134,7 @@ class AwqQuantizer:
             
             loss.backward()
 
-            # DEBUG: Check if gradients exist
-            if i == 0:
-                grad_exists = 0
-                grad_sum = 0
-                grad_max = 0
-                for name, module in named_linears.items():
-                    if module.weight.grad is not None:
-                        grad_exists += 1
-                        grad_sum += module.weight.grad.abs().sum().item()
-                        grad_max = max(grad_max, module.weight.grad.abs().max().item())
-                    else:
-                        print(f"⚠️ No gradient for {name}")
-                print(f"Gradients exist for {grad_exists}/{len(named_linears)} layers")
-                print(f"Total gradient magnitude: {grad_sum:.6f}")
-                print(f"Max gradient value: {grad_max:.6f}")
-
-            # Accumulate gradients
-            for name, module in named_linears.items():
+            for name, module in filtered_linears.items():
                 if module.weight.grad is not None:
                     accumulated_grads[name] += module.weight.grad.cpu()
                 module.weight.grad = None 
@@ -158,19 +143,13 @@ class AwqQuantizer:
 
         print("Calculating final safety scores...")
         safe_scores = {}
-        for name, module in tqdm(named_linears.items(), desc="Calculating Scores"):
+        for name, module in tqdm(filtered_linears.items(), desc="Calculating Scores"):
             module.weight.requires_grad = False
-            
-            # Move one layer's gradients to GPU
             grad_tensor = accumulated_grads[name].to(device)
             
-            # Perform calculation on GPU
             score = torch.abs(module.weight.to(device) * grad_tensor)
-            
-            # Move the result back to CPU to free VRAM for the next iteration
             safe_scores[name] = score.cpu()
             
-            # Clean up the gradient tensor from VRAM
             del grad_tensor
             clear_memory()
 
@@ -187,7 +166,6 @@ class AwqQuantizer:
         assert w.dim() == 2
         assert torch.isnan(w).sum() == 0
 
-        # zero point quantization
         if self.zero_point:
             max_val = w.amax(dim=1, keepdim=True)
             min_val = w.amin(dim=1, keepdim=True)
@@ -218,11 +196,9 @@ class AwqQuantizer:
     def pseudo_dequantize_tensor(
         self, w: nn.Linear, scales: torch.Tensor, zeros: Optional[torch.Tensor] = None
     ):
-        # get repeated count
         repeat_count = w.weight.data.shape[-1] // scales.shape[-1]
         scales = scales.repeat(1, repeat_count).reshape(w.weight.data.shape)
 
-        # dequantize
         if self.zero_point:
             zeros = zeros.repeat(1, repeat_count).reshape(w.weight.data.shape)
             w = (w.weight.data - zeros) * scales
@@ -239,14 +215,6 @@ class AwqQuantizer:
         print("Aggregating scores...")
         all_scores_tensor = self._analyze_safety_scores(safe_scores)
         
-        if all_scores_tensor.max() < 1e-8:
-            print("\n⚠️ WARNING: All safety scores are near zero!")
-            print("This might indicate:")
-            print("1. Gradient calculation issue")
-            print("2. Model not properly loaded")
-            print("3. Loss function not working correctly")
-            input("Press Enter to continue or Ctrl+C to abort...")
-        
         print("Finding threshold via sampling and sorting...")
         tau = 0.6
         sample_size = min(1_000_000, all_scores_tensor.numel())
@@ -259,9 +227,8 @@ class AwqQuantizer:
         del all_scores_tensor, scores_sample_cpu
         clear_memory()
 
-        # Store threshold and scores instead of all masks
         self.safety_threshold = threshold
-        self.safety_scores = safe_scores  # Keep scores, delete after quantization
+        self.safety_scores = safe_scores 
         
         print(f"Safety threshold: {threshold}")
 
@@ -361,13 +328,12 @@ class AwqQuantizer:
         for name, linear_layer in named_linears.items():
             full_layer_name = get_op_name(self.model, linear_layer)
             
-            # Compute mask on-demand instead of retrieving from pre-computed dict
             mask = None
             if hasattr(self, 'safety_scores') and self.safety_scores is not None:
                 if full_layer_name in self.safety_scores:
                     scores = self.safety_scores[full_layer_name]
                     mask = scores > self.safety_threshold
-                    # Free the scores immediately after creating mask
+                    
                     del self.safety_scores[full_layer_name]
                     del scores
                     clear_memory()
@@ -378,20 +344,15 @@ class AwqQuantizer:
             if mask is not None and torch.any(mask):
                 print(f"Applying mixed-precision quantization to {full_layer_name}")
                 
-                # Move mask to same device as weights
                 mask = mask.to(linear_layer.weight.device)
-                
-                # 1. Isolate non-critical weights for statistics calculation
                 w_for_stats = linear_layer.weight.data.clone()
-                
-                # Temporarily replace critical weights with values that will be ignored by min/max
-                w_for_stats[mask] = torch.inf # Ignored by min()
+
+                w_for_stats[mask] = torch.inf
                 min_val_unmasked = w_for_stats.amin(dim=-1, keepdim=True)
                 
-                w_for_stats[mask] = -torch.inf # Ignored by max()
+                w_for_stats[mask] = -torch.inf 
                 max_val_unmasked = w_for_stats.amax(dim=-1, keepdim=True)
 
-                # 2. Calculate scales and zeros correctly from ONLY non-critical weights
                 if self.zero_point:
                     max_int = 2**self.w_bit - 1
                     scales = (max_val_unmasked - min_val_unmasked).clamp(min=1e-5) / max_int
@@ -402,7 +363,6 @@ class AwqQuantizer:
                     scales = max_val_unmasked.clamp(min=1e-5) / max_int
                     zeros = None
 
-                # 3. Apply quantization to a clone of the original weights
                 w_quantized = linear_layer.weight.data.clone()
                 if self.zero_point:
                     w_quantized = (torch.clamp(torch.round(w_quantized / scales) + zeros, 0, max_int) - zeros) * scales
@@ -410,13 +370,10 @@ class AwqQuantizer:
                     min_int = -(2 ** (self.w_bit - 1))
                     w_quantized = torch.clamp(torch.round(w_quantized / scales), min_int, max_int) * scales
                 
-                # 4. Restore the high-precision critical weights from the original tensor
-                w_quantized[mask] = linear_layer.weight.data[mask]
                 
-                # 5. Assign the final mixed-precision weight back to the layer
+                w_quantized[mask] = linear_layer.weight.data[mask]
                 linear_layer.weight.data = w_quantized
                 
-                # Free the mask
                 del mask, w_for_stats
             
             # PATH 2: Layer is not critical -> Convert to fully quantized WQLinear
@@ -881,11 +838,9 @@ class AwqQuantizer:
         """
         print("\n=== Safety Score Analysis ===")
         
-        # Calculate statistics WITHOUT concatenating all scores
         total_weights = sum(scores.numel() for scores in safe_scores.values())
         print(f"Total weights: {total_weights:,}")
         
-        # Find global min/max by iterating through layers
         global_min = float('inf')
         global_max = float('-inf')
         
@@ -896,14 +851,12 @@ class AwqQuantizer:
         print(f"Min score: {global_min:.6f}")
         print(f"Max score: {global_max:.6f}")
         
-        # Calculate mean incrementally (Welford's online algorithm)
         running_sum = 0.0
         for scores in safe_scores.values():
             running_sum += scores.sum().item()
         mean_score = running_sum / total_weights
         print(f"Mean score: {mean_score:.6f}")
         
-        # Count zeros efficiently
         zero_count = 0
         near_zero_count = 0
         for scores in safe_scores.values():
@@ -913,12 +866,10 @@ class AwqQuantizer:
         print(f"Zero values: {zero_count:,} ({100*zero_count/total_weights:.2f}%)")
         print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/total_weights:.2f}%)")
         
-        # Sample for histogram (much more memory efficient)
         print("\n=== Creating Distribution Plot ===")
-        sample_size = min(10_000_000, total_weights)  # Sample 10M weights max
+        sample_size = min(10_000_000, total_weights)
         print(f"Sampling {sample_size:,} weights for visualization...")
         
-        # Reservoir sampling to get uniform random sample across all layers
         sampled_scores = []
         seen = 0
         
@@ -926,13 +877,10 @@ class AwqQuantizer:
             scores_flat = scores.view(-1)
             layer_size = scores_flat.numel()
             
-            # Determine how many to sample from this layer
             if seen + layer_size <= sample_size:
-                # Take all from this layer
                 sampled_scores.append(scores_flat.cpu())
                 seen += layer_size
             else:
-                # Randomly sample from this layer
                 remaining = sample_size - seen
                 if remaining > 0:
                     indices = torch.randperm(layer_size)[:remaining]
@@ -940,7 +888,6 @@ class AwqQuantizer:
                     seen = sample_size
                     break
         
-        # Concatenate only the sampled scores
         sampled_scores = torch.cat(sampled_scores)
         
         print(f"Computing percentiles on {sampled_scores.numel():,} samples...")
@@ -949,13 +896,11 @@ class AwqQuantizer:
             val = torch.quantile(sampled_scores.float(), p/100)
             print(f"{p}th percentile: {val.item():.6f}")
         
-        # Create histogram with sampled data
         import matplotlib.pyplot as plt
         import numpy as np
         
         plt.figure(figsize=(12, 4))
         
-        # Convert to numpy for plotting
         scores_np = sampled_scores.numpy()
         
         plt.subplot(1, 3, 1)
@@ -974,7 +919,6 @@ class AwqQuantizer:
         plt.grid(True, alpha=0.3)
         
         plt.subplot(1, 3, 3)
-        # Remove zeros for log scale
         non_zero_scores = scores_np[scores_np > 0]
         if len(non_zero_scores) > 0:
             plt.hist(non_zero_scores, bins=100, edgecolor='black', alpha=0.7, color='orange')
@@ -989,8 +933,7 @@ class AwqQuantizer:
         print(f"\nPlot saved as 'safety_score_distribution.png'")
         plt.close()
         
-        # Per-layer summary (top 10 layers by max score)
-        print("\n=== Top 10 Layers by Max Score ===")
+        print("\n=== Top 10 Layers by Mean Score ===")
         layer_stats = []
         for name, scores in safe_scores.items():
             layer_stats.append({
@@ -999,17 +942,15 @@ class AwqQuantizer:
                 'mean': scores.mean().item(),
             })
         
-        layer_stats.sort(key=lambda x: x['max'], reverse=True)
+        layer_stats.sort(key=lambda x: x['mean'], reverse=True)
         for i, stat in enumerate(layer_stats[:10]):
             print(f"{i+1}. {stat['name']}")
             print(f"   Max: {stat['max']:.6f}, Mean: {stat['mean']:.6f}")
         
-        # Free memory
+    
         del sampled_scores
         clear_memory()
         
-        # Return a small sample for threshold calculation
-        # Sample again to avoid keeping large tensor in memory
         sample_for_threshold = []
         sample_size_threshold = min(1_000_000, total_weights)
         seen = 0
