@@ -3,6 +3,7 @@ import inspect
 import logging
 import functools
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import Dict, List, Optional
 from collections import defaultdict
@@ -74,14 +75,8 @@ class AwqQuantizer:
     def _calculate_safescore(self, named_linears):
         """
         Calculates the SNIP-based SafeScore for each weight in the model.
-        Excludes lm_head and embedding layers.
         """
-        filtered_linears = {
-            name: module for name, module in named_linears.items()
-            if not any(exclude in name.lower() for exclude in ['lm_head', 'embed', 'wte', 'wpe'])
-        }
-        
-        print(f"Calculating safety scores for {len(filtered_linears)} layers (excluded {len(named_linears) - len(filtered_linears)} special layers)")
+        print(f"Calculating safety scores for {len(named_linears)} layers")
         
         calib_data = get_calib_dataset(
             data="walledai/AdvBench",
@@ -95,18 +90,23 @@ class AwqQuantizer:
         self.model.to(device)
 
         batch_size = 1
-        
-        accumulated_grads = {name: torch.zeros_like(module.weight, device='cpu') 
-                             for name, module in filtered_linears.items()}
+        accumulated_scores = {
+            name: torch.zeros_like(module.weight, device='cpu')
+            for name, module in named_linears.items()
+        }
 
+        num_batches = 0
         clear_memory()
 
         for i in tqdm(range(0, len(calib_data), batch_size), desc="Calculating Gradients"):
             batch = calib_data[i:i+batch_size].to(device)
+            if batch.size(0) == 0:
+                continue
 
+            num_batches += 1
             self.model.train()
             
-            for module in filtered_linears.values():
+            for module in named_linears.values():
                 module.weight.requires_grad = True
             
             self.model.zero_grad()
@@ -134,27 +134,25 @@ class AwqQuantizer:
             
             loss.backward()
 
-            for name, module in filtered_linears.items():
+            for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    accumulated_grads[name] += module.weight.grad.cpu()
-                module.weight.grad = None 
+                    current_score = torch.abs(module.weight.data * module.weight.grad.data)
+                    accumulated_scores[name] += current_score.cpu()
+                    module.weight.grad = None 
+                
+                module.weight.requires_grad = False
 
             clear_memory()
 
         print("Calculating final safety scores...")
         safe_scores = {}
-        for name, module in tqdm(filtered_linears.items(), desc="Calculating Scores"):
-            module.weight.requires_grad = False
-            grad_tensor = accumulated_grads[name].to(device)
-            
-            score = torch.abs(module.weight.to(device) * grad_tensor)
-            safe_scores[name] = score.cpu()
-            
-            del grad_tensor
-            clear_memory()
+        if num_batches == 0:
+            raise ValueError("No batches were processed for safety score calculation.")
+
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
+            safe_scores[name] = acc_score / num_batches
 
         self.model.eval()
-        
         clear_memory()
         return safe_scores
 
@@ -209,26 +207,46 @@ class AwqQuantizer:
 
     def quantize(self):
         print("Calculating safety-critical weights...")
-        all_linears = get_named_linears(self.model)
-        safe_scores = self._calculate_safescore(all_linears)
+
+        all_safe_scores = {}
+        for i in tqdm(range(len(self.modules)), desc="Calculating Safety Scores"):
+            common_device = get_best_device()
+            self.modules[i] = self.modules[i].to(common_device)
+
+            named_linears = get_named_linears(self.modules[i])
+            named_linears = exclude_layers_to_not_quantize(
+                named_linears, self.modules_to_not_convert
+            )
+
+            if len(named_linears) > 0:
+                module_scores = self._calculate_safescore(named_linears)
+
+                module_prefix = get_op_name(self.model, self.modules[i]) + "."
+                for name, scores in module_scores.items():
+                    full_name = module_prefix + name
+                    all_safe_scores[full_name] = scores
+            
+            self.modules[i] = self.modules[i].cpu()
+            clear_memory()
+        
 
         print("Aggregating scores...")
-        all_scores_tensor = self._analyze_safety_scores(safe_scores)
-        
-        print("Finding threshold via sampling and sorting...")
-        tau = 0.6
+        all_scores_tensor = self._analyze_safety_scores(all_safe_scores)
         sample_size = min(1_000_000, all_scores_tensor.numel())
         indices = torch.randint(0, all_scores_tensor.numel(), (sample_size,))
-        
-        scores_sample_cpu = all_scores_tensor[indices]
-        k = int(sample_size * (1.0 - tau))
-        threshold = torch.topk(scores_sample_cpu.float(), k, largest=True, sorted=False)[0].min()
+        score_samples = all_scores_tensor.view(-1)[indices].cpu()
 
-        del all_scores_tensor, scores_sample_cpu
+
+        print("Finding threshold via sampling and sorting...")
+        tau = 0.6
+        k = int(score_samples.numel() * tau)
+        threshold = torch.topk(score_samples.float(), k, largest=True, sorted=False)[0].min()
+
+        del all_scores_tensor, score_samples
         clear_memory()
 
         self.safety_threshold = threshold
-        self.safety_scores = safe_scores 
+        self.safety_scores = all_safe_scores
         
         print(f"Safety threshold: {threshold}")
 
@@ -332,7 +350,7 @@ class AwqQuantizer:
             if hasattr(self, 'safety_scores') and self.safety_scores is not None:
                 if full_layer_name in self.safety_scores:
                     scores = self.safety_scores[full_layer_name]
-                    mask = scores > self.safety_threshold
+                    mask = scores >= self.safety_threshold
                     
                     del self.safety_scores[full_layer_name]
                     del scores
@@ -896,9 +914,6 @@ class AwqQuantizer:
             val = torch.quantile(sampled_scores.float(), p/100)
             print(f"{p}th percentile: {val.item():.6f}")
         
-        import matplotlib.pyplot as plt
-        import numpy as np
-        
         plt.figure(figsize=(12, 4))
         
         scores_np = sampled_scores.numpy()
@@ -951,23 +966,4 @@ class AwqQuantizer:
         del sampled_scores
         clear_memory()
         
-        sample_for_threshold = []
-        sample_size_threshold = min(1_000_000, total_weights)
-        seen = 0
-        
-        for scores in safe_scores.values():
-            scores_flat = scores.view(-1)
-            layer_size = scores_flat.numel()
-            
-            if seen + layer_size <= sample_size_threshold:
-                sample_for_threshold.append(scores_flat.cpu())
-                seen += layer_size
-            else:
-                remaining = sample_size_threshold - seen
-                if remaining > 0:
-                    indices = torch.randperm(layer_size)[:remaining]
-                    sample_for_threshold.append(scores_flat[indices].cpu())
-                    seen = sample_size_threshold
-                break
-        
-        return torch.cat(sample_for_threshold)
+        return torch.cat([scores.view(-1) for scores in safe_scores.values()])
