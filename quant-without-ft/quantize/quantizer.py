@@ -88,7 +88,8 @@ class AwqQuantizer:
 
         batch_size = 1
         
-        accumulated_grads = {name: torch.zeros_like(module.weight, device='cpu') for name, module in named_linears.items()}
+        accumulated_grads = {name: torch.zeros_like(module.weight, device='cpu') 
+                             for name, module in named_linears.items()}
 
         clear_memory()
 
@@ -96,18 +97,38 @@ class AwqQuantizer:
             batch = calib_data[i:i+batch_size].to(device)
 
             self.model.train()
+            
+            # Enable gradients for all linear layers
             for module in named_linears.values():
                 module.weight.requires_grad = True
             
             self.model.zero_grad()
 
+            # Forward pass
             outputs = self.model(batch)
-            loss = -torch.nn.functional.log_softmax(outputs.logits, dim=-1).mean()
+            logits = outputs.logits
+            
+            # Create target labels (predict next token)
+            # Shift labels to align with predictions
+            if batch.size(1) > 1:
+                labels = batch[:, 1:].contiguous()
+                logits = logits[:, :-1, :].contiguous()
+            else:
+                # For single token, use the same token as target
+                labels = batch
+            
+            # Flatten for loss calculation
+            loss = torch.nn.functional.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                labels.view(-1),
+                reduction='mean'
+            )
             
             # DEBUG: Check loss value
             if i == 0:
                 print(f"\nFirst batch loss: {loss.item():.6f}")
                 print(f"Loss requires_grad: {loss.requires_grad}")
+                print(f"Logits requires_grad: {logits.requires_grad}")
             
             loss.backward()
 
@@ -115,16 +136,19 @@ class AwqQuantizer:
             if i == 0:
                 grad_exists = 0
                 grad_sum = 0
+                grad_max = 0
                 for name, module in named_linears.items():
                     if module.weight.grad is not None:
                         grad_exists += 1
                         grad_sum += module.weight.grad.abs().sum().item()
+                        grad_max = max(grad_max, module.weight.grad.abs().max().item())
                     else:
                         print(f"⚠️ No gradient for {name}")
                 print(f"Gradients exist for {grad_exists}/{len(named_linears)} layers")
                 print(f"Total gradient magnitude: {grad_sum:.6f}")
-                clear_memory()
+                print(f"Max gradient value: {grad_max:.6f}")
 
+            # Accumulate gradients
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
                     accumulated_grads[name] += module.weight.grad.cpu()
@@ -866,61 +890,61 @@ class AwqQuantizer:
         print(f"Total weights: {all_scores.numel():,}")
         print(f"Min score: {all_scores.min().item():.6f}")
         print(f"Max score: {all_scores.max().item():.6f}")
-        print(f"Mean score: {all_scores.mean().item():.6f}")
-        print(f"Median score: {all_scores.median().item():.6f}")
-        print(f"Std score: {all_scores.std().item():.6f}")
+        # print(f"Mean score: {all_scores.mean().item():.6f}")
+        # print(f"Median score: {all_scores.median().item():.6f}")
+        # print(f"Std score: {all_scores.std().item():.6f}")
         
-        # Percentiles
-        percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
-        for p in percentiles:
-            val = torch.quantile(all_scores.float(), p/100)
-            print(f"{p}th percentile: {val.item():.6f}")
+        # # Percentiles
+        # percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
+        # for p in percentiles:
+        #     val = torch.quantile(all_scores.float(), p/100)
+        #     print(f"{p}th percentile: {val.item():.6f}")
         
-        # Count zeros and very small values
-        zero_count = (all_scores == 0).sum().item()
-        near_zero_count = (all_scores.abs() < 1e-6).sum().item()
-        print(f"\nZero values: {zero_count:,} ({100*zero_count/all_scores.numel():.2f}%)")
-        print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/all_scores.numel():.2f}%)")
+        # # Count zeros and very small values
+        # zero_count = (all_scores == 0).sum().item()
+        # near_zero_count = (all_scores.abs() < 1e-6).sum().item()
+        # print(f"\nZero values: {zero_count:,} ({100*zero_count/all_scores.numel():.2f}%)")
+        # print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/all_scores.numel():.2f}%)")
         
-        # Plot histogram
-        plt.figure(figsize=(12, 4))
+        # # Plot histogram
+        # plt.figure(figsize=(12, 4))
         
-        plt.subplot(1, 3, 1)
-        plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black')
-        plt.xlabel('Safety Score')
-        plt.ylabel('Frequency')
-        plt.title('Safety Score Distribution')
-        plt.yscale('log')
+        # plt.subplot(1, 3, 1)
+        # plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black')
+        # plt.xlabel('Safety Score')
+        # plt.ylabel('Frequency')
+        # plt.title('Safety Score Distribution')
+        # plt.yscale('log')
         
-        plt.subplot(1, 3, 2)
-        plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black', cumulative=True, density=True)
-        plt.xlabel('Safety Score')
-        plt.ylabel('Cumulative Probability')
-        plt.title('Cumulative Distribution')
-        plt.grid(True, alpha=0.3)
+        # plt.subplot(1, 3, 2)
+        # plt.hist(all_scores.cpu().numpy(), bins=100, edgecolor='black', cumulative=True, density=True)
+        # plt.xlabel('Safety Score')
+        # plt.ylabel('Cumulative Probability')
+        # plt.title('Cumulative Distribution')
+        # plt.grid(True, alpha=0.3)
         
-        plt.subplot(1, 3, 3)
-        # Remove zeros for log scale
-        non_zero_scores = all_scores[all_scores > 0]
-        if non_zero_scores.numel() > 0:
-            plt.hist(non_zero_scores.cpu().numpy(), bins=100, edgecolor='black')
-            plt.xlabel('Safety Score')
-            plt.ylabel('Frequency')
-            plt.title('Non-Zero Scores (Log Scale)')
-            plt.xscale('log')
-            plt.yscale('log')
+        # plt.subplot(1, 3, 3)
+        # # Remove zeros for log scale
+        # non_zero_scores = all_scores[all_scores > 0]
+        # if non_zero_scores.numel() > 0:
+        #     plt.hist(non_zero_scores.cpu().numpy(), bins=100, edgecolor='black')
+        #     plt.xlabel('Safety Score')
+        #     plt.ylabel('Frequency')
+        #     plt.title('Non-Zero Scores (Log Scale)')
+        #     plt.xscale('log')
+        #     plt.yscale('log')
         
-        plt.tight_layout()
-        plt.savefig('safety_score_distribution.png', dpi=300, bbox_inches='tight')
-        print(f"\nPlot saved as 'safety_score_distribution.png'")
-        plt.close()
+        # plt.tight_layout()
+        # plt.savefig('safety_score_distribution.png', dpi=300, bbox_inches='tight')
+        # print(f"\nPlot saved as 'safety_score_distribution.png'")
+        # plt.close()
         
-        # Per-layer analysis
-        print("\n=== Per-Layer Statistics ===")
-        for name, scores in safe_scores.items():
-            layer_mean = scores.mean().item()
-            layer_max = scores.max().item()
-            layer_std = scores.std().item()
-            print(f"{name}: mean={layer_mean:.6f}, max={layer_max:.6f}, std={layer_std:.6f}")
+        # # Per-layer analysis
+        # print("\n=== Per-Layer Statistics ===")
+        # for name, scores in safe_scores.items():
+        #     layer_mean = scores.mean().item()
+        #     layer_max = scores.max().item()
+        #     layer_std = scores.std().item()
+        #     print(f"{name}: mean={layer_mean:.6f}, max={layer_max:.6f}, std={layer_std:.6f}")
         
         return all_scores
