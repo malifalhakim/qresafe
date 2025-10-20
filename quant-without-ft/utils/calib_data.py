@@ -63,3 +63,54 @@ def get_calib_dataset(
     return [
         cat_samples[:, i * max_seq_len : (i + 1) * max_seq_len] for i in range(n_split)
     ]
+
+def get_fairness_dataset(
+    dataset_name: str = "McGill-NLP/stereoset",
+    subset: str = "intersentence",
+    split: str = "validation",
+    tokenizer=None,
+    n_samples: int = 512
+):
+    dataset = load_dataset(dataset_name, subset, split=split)
+    dataset = dataset.shuffle(seed=42)
+    if n_samples is not None:
+        dataset = dataset.select(range(n_samples))
+    
+    fairness_data = []
+    for data in dataset:
+        context = data['context']
+        sentences_data = data['sentences']
+        
+        sentences_dict = {}
+        for label, sentence in zip(sentences_data['gold_label'], sentences_data['sentence']):
+            sentences_dict[label] = sentence
+        
+        # Append tuple of (context, stereotypical sentence, anti-stereotypical sentence)
+        context_tokenized = tokenizer(context, return_tensors='pt').input_ids
+        sentences_tokenized = {label: tokenizer(sentence, return_tensors='pt').input_ids for label, sentence in sentences_dict.items()}
+        fairness_data.append((context_tokenized, sentences_tokenized[0], sentences_tokenized[1]))
+
+    return fairness_data
+
+def get_safety_dataset(
+    dataset_name: str = "walledai/AdvBench",
+    split: str = "train",
+    n_samples: int = 512,
+    tokenizer = None
+):
+    dataset = load_dataset(dataset_name, split=split)
+    dataset = dataset.shuffle(seed=42)
+    if n_samples is not None:
+        dataset = dataset.select(range(n_samples))
+    
+    safety_data = []
+    for data in dataset:
+        prompt = data['prompt']
+        target = data['target']
+
+        prompt_tokenized = tokenizer(prompt, return_tensors='pt').input_ids
+        target_tokenized = tokenizer(target, return_tensors='pt').input_ids
+
+        safety_data.append((prompt_tokenized, target_tokenized))
+
+    return safety_data

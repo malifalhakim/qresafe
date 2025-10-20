@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import Dict, List, Optional
 from collections import defaultdict
-from utils.calib_data import get_calib_dataset
+from utils.calib_data import get_calib_dataset, get_fairness_dataset, get_safety_dataset
 from quantize.scale import apply_scale, apply_clip
 from utils.utils import clear_memory, get_best_device
 from modules.linear import (
@@ -46,6 +46,8 @@ class AwqQuantizer:
         max_calib_samples=128,
         max_calib_seq_len=512,
         max_chunk_memory=1024 * 1024 * 1024,
+        protect_safety=False,
+        protect_fairness=False,
     ) -> None:
         self.awq_model = awq_model
         self.model = model
@@ -71,62 +73,65 @@ class AwqQuantizer:
             n_samples=self.max_calib_samples, max_seq_len=self.max_calib_seq_len
         )
 
+        if protect_safety and protect_fairness:
+            raise ValueError("Cannot protect both safety and fairness at the same time for now.")
+
 
     def _calculate_safescore(self, named_linears):
         """
         Calculates the SNIP-based SafeScore for each weight in the model.
         """
         print(f"Calculating safety scores for {len(named_linears)} layers")
-        
-        calib_data = get_calib_dataset(
-            data="walledai/AdvBench",
-            tokenizer=self.tokenizer,
-            n_samples=self.max_calib_samples,
-            max_seq_len=256,
-            text_column="prompt"
-        )
-        calib_data = torch.cat(calib_data, dim=0)
+        calib_data = get_safety_dataset(tokenizer=self.tokenizer)
+
+        prompts = []
+        targets = []
+        for prompt, target in calib_data:
+            prompts.append(prompt)
+            targets.append(target)
+
         device = get_best_device()
         self.model.to(device)
 
-        batch_size = 1
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
             for name, module in named_linears.items()
         }
 
-        num_batches = 0
+        num_data = 0
         clear_memory()
 
-        for i in tqdm(range(0, len(calib_data), batch_size), desc="Calculating Gradients"):
-            batch = calib_data[i:i+batch_size].to(device)
-            if batch.size(0) == 0:
-                continue
+        for i in tqdm(range(0, len(prompts)), desc="Calculating Gradients"):
+            prompt = prompts[i].to(device)
+            target = targets[i].to(device)
 
-            num_batches += 1
+            num_data += 1
             self.model.train()
             
             for module in named_linears.values():
                 module.weight.requires_grad = True
             
             self.model.zero_grad()
+            full_sequence = torch.cat([prompt, target], dim=1)
 
-            outputs = self.model(batch)
+            outputs = self.model(full_sequence)
             logits = outputs.logits
             
-            if batch.size(1) > 1:
-                labels = batch[:, 1:].contiguous()
-                logits = logits[:, :-1, :].contiguous()
-            else:
-                labels = batch
+            prompt_len = prompt.size(1)
+            target_len = target.size(1)
+
+            prediction_logits = logits[:, prompt_len - 1: prompt_len - 1 + target_len, :]
+            target_labels = target
+
+            assert prediction_logits.size(1) == target_labels.size(1), \
+                f"Prediction length {prediction_logits.size(1)} does not match target length {target_labels.size(1)}"
             
             loss = torch.nn.functional.cross_entropy(
-                logits.view(-1, logits.size(-1)),
-                labels.view(-1),
+                prediction_logits.reshape(-1, prediction_logits.size(-1)),
+                target_labels.reshape(-1),
                 reduction='mean'
             )
             
-        
             if i == 0:
                 print(f"\nFirst batch loss: {loss.item():.6f}")
                 print(f"Loss requires_grad: {loss.requires_grad}")
@@ -146,15 +151,118 @@ class AwqQuantizer:
 
         print("Calculating final safety scores...")
         safe_scores = {}
-        if num_batches == 0:
+        if num_data == 0:
             raise ValueError("No batches were processed for safety score calculation.")
 
         for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
-            safe_scores[name] = acc_score / num_batches
+            safe_scores[name] = acc_score / num_data
 
         self.model.eval()
         clear_memory()
         return safe_scores
+    
+    def _calculate_fairscore(self, named_linears):
+        """Calculate FairScore for each weight in the model."""
+        calib_data = get_fairness_dataset(tokenizer=self.tokenizer)
+
+        contexts = []
+        stereotypes = []
+        antistereotypes = []
+        for context, stereotype, antistereotype in calib_data:
+            contexts.append(context)
+            stereotypes.append(stereotype)
+            antistereotypes.append(antistereotype)
+        
+        device = get_best_device()
+        self.model.to(device)
+
+        accumulated_scores = {
+            name: torch.zeros_like(module.weight, device='cpu')
+            for name, module in named_linears.items()
+        }
+
+        num_data = 0
+        clear_memory()
+
+        for i in tqdm(range(0, len(contexts)), desc="Calculating Gradients"):
+            context = contexts[i].to(device)
+            target_stereotype = stereotypes[i].to(device)
+            target_antistereotype = antistereotypes[i].to(device)
+
+            num_data += 1
+            self.model.train()
+            
+            for module in named_linears.values():
+                module.weight.requires_grad = True
+
+            self.model.zero_grad()
+
+            # -- NLL for stereotype --
+            full_sequence_stereo = torch.cat([context, target_stereotype], dim=1)
+            outputs_stereo = self.model(full_sequence_stereo)
+            logits_stereo = outputs_stereo.logits
+
+            context_len = context.size(1)
+            stereo_len = stereotype.size(1)
+
+            prediction_logits_stereo = logits_stereo[:, context_len - 1: context_len - 1 + stereo_len, :]
+            target_labels_stereo = target_stereotype
+
+            nll_stereo = torch.nn.functional.cross_entropy(
+                prediction_logits_stereo.reshape(-1, prediction_logits_stereo.size(-1)),
+                target_labels_stereo.reshape(-1),
+                reduction='mean'
+            )
+
+            # -- NLL for antistereotype --
+            full_sequence_anti = torch.cat([context, target_antistereotype], dim=1)
+            outputs_anti = self.model(full_sequence_anti)
+            logits_anti = outputs_anti.logits
+
+            anti_stereo_len = antistereotype.size(1)
+
+            prediction_logits_anti = logits_anti[:, context_len - 1: context_len - 1 + anti_stereo_len, :]
+            target_labels_anti = target_antistereotype
+
+            nll_anti = torch.nn.functional.cross_entropy(
+                prediction_logits_anti.reshape(-1, prediction_logits_anti.size(-1)),
+                target_labels_anti.reshape(-1),
+                reduction='mean'
+            )
+
+            # -- Fairness loss --
+            fairness_loss = torch.abs(nll_stereo - nll_anti)
+
+            if i == 0:
+                print(f"\nFirst batch fairness loss: {fairness_loss.item():.6f}")
+                print(f"Loss requires_grad: {fairness_loss.requires_grad}")
+                print(f"Logits requires_grad: {logits_stereo.requires_grad}, {logits_anti.requires_grad}")
+                print("NLL Stereo:", nll_stereo.item())
+                print("NLL Anti:", nll_anti.item())
+            
+            fairness_loss.backward()
+
+            for name, module in named_linears.items():
+                if module.weight.grad is not None:
+                    current_score = torch.abs(module.weight.data * module.weight.grad.data)
+                    accumulated_scores[name] += current_score.cpu()
+                    module.weight.grad = None 
+                
+                module.weight.requires_grad = False
+            
+            clear_memory()
+
+        print("Calculating final fairness scores...")
+        fair_scores = {}
+        if num_data == 0:
+            raise ValueError("No batches were processed for fairness score calculation.")
+        
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
+            fair_scores[name] = acc_score / num_data
+
+        self.model.eval()
+        clear_memory()
+        return fair_scores
 
     def pseudo_quantize_tensor(self, w: torch.Tensor):
         org_w_shape = w.shape
@@ -206,10 +314,13 @@ class AwqQuantizer:
         return w
 
     def quantize(self):
-        print("Calculating safety-critical weights...")
+        if self.protect_safety:
+            print_str = "Calculating safety-critical weights..."
+        elif self.protect_fairness:
+            print_str = "Calculating fairness-critical weights..."
 
-        all_safe_scores = {}
-        for i in tqdm(range(len(self.modules)), desc="Calculating Safety Scores"):
+        all_scores = {}
+        for i in tqdm(range(len(self.modules)), desc=print_str):
             common_device = get_best_device()
             self.modules[i] = self.modules[i].to(common_device)
 
@@ -219,19 +330,22 @@ class AwqQuantizer:
             )
 
             if len(named_linears) > 0:
-                module_scores = self._calculate_safescore(named_linears)
+                if self.protect_fairness:
+                    module_scores = self._calculate_fairscore(named_linears)
+                elif self.protect_safety:
+                    module_scores = self._calculate_safescore(named_linears)
 
                 module_prefix = get_op_name(self.model, self.modules[i]) + "."
                 for name, scores in module_scores.items():
                     full_name = module_prefix + name
-                    all_safe_scores[full_name] = scores
+                    all_scores[full_name] = scores
             
             self.modules[i] = self.modules[i].cpu()
             clear_memory()
         
 
         print("Aggregating scores...")
-        all_scores_tensor = self._analyze_safety_scores(all_safe_scores)
+        all_scores_tensor = self._analyze_scores(all_scores)
         sample_size = min(1_000_000, all_scores_tensor.numel())
         indices = torch.randint(0, all_scores_tensor.numel(), (sample_size,))
         score_samples = all_scores_tensor.view(-1)[indices].cpu()
@@ -245,10 +359,10 @@ class AwqQuantizer:
         del all_scores_tensor, score_samples
         clear_memory()
 
-        self.safety_threshold = threshold
-        self.safety_scores = all_safe_scores
-        
-        print(f"Safety threshold: {threshold}")
+        self.critical_threshold = threshold
+        self.critical_scores = all_scores
+
+        print(f"Critical threshold: {threshold}")
 
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
             # Move module and inputs to correct device
@@ -328,8 +442,8 @@ class AwqQuantizer:
             clear_memory()
     
         # Clean up scores after quantization is complete
-        del self.safety_scores
-        self.safety_scores = None
+        del self.critical_scores
+        self.critical_scores = None
         clear_memory()
 
     def pack(self):
@@ -347,18 +461,18 @@ class AwqQuantizer:
             full_layer_name = get_op_name(self.model, linear_layer)
             
             mask = None
-            if hasattr(self, 'safety_scores') and self.safety_scores is not None:
-                if full_layer_name in self.safety_scores:
-                    scores = self.safety_scores[full_layer_name]
-                    mask = scores >= self.safety_threshold
-                    
-                    del self.safety_scores[full_layer_name]
+            if hasattr(self, 'critical_scores') and self.critical_scores is not None:
+                if full_layer_name in self.critical_scores:
+                    scores = self.critical_scores[full_layer_name]
+                    mask = scores >= self.critical_threshold
+
+                    del self.critical_scores[full_layer_name]
                     del scores
                     clear_memory()
 
             linear_layer = linear_layer.to(get_best_device()).half()
 
-            # PATH 1: Layer contains safety-critical weights -> Apply Mixed-Precision
+            # PATH 1: Layer contains critical weights -> Apply Mixed-Precision
             if mask is not None and torch.any(mask):
                 print(f"Applying mixed-precision quantization to {full_layer_name}")
                 
@@ -850,19 +964,19 @@ class AwqQuantizer:
                 sanitized_kwargs[k] = v
         return sanitized_kwargs
 
-    def _analyze_safety_scores(self, safe_scores):
+    def _analyze_scores(self, scores):
         """
-        Memory-efficient analysis of safety score distribution
+        Memory-efficient analysis of critical score distribution
         """
-        print("\n=== Safety Score Analysis ===")
-        
-        total_weights = sum(scores.numel() for scores in safe_scores.values())
+        print("\n=== Critical Score Analysis ===")
+
+        total_weights = sum(scores.numel() for scores in scores.values())
         print(f"Total weights: {total_weights:,}")
         
         global_min = float('inf')
         global_max = float('-inf')
-        
-        for scores in safe_scores.values():
+
+        for scores in scores.values():
             global_min = min(global_min, scores.min().item())
             global_max = max(global_max, scores.max().item())
         
@@ -870,14 +984,14 @@ class AwqQuantizer:
         print(f"Max score: {global_max:.6f}")
         
         running_sum = 0.0
-        for scores in safe_scores.values():
+        for scores in scores.values():
             running_sum += scores.sum().item()
         mean_score = running_sum / total_weights
         print(f"Mean score: {mean_score:.6f}")
         
         zero_count = 0
         near_zero_count = 0
-        for scores in safe_scores.values():
+        for scores in scores.values():
             zero_count += (scores == 0).sum().item()
             near_zero_count += (scores.abs() < 1e-6).sum().item()
         
@@ -890,8 +1004,8 @@ class AwqQuantizer:
         
         sampled_scores = []
         seen = 0
-        
-        for scores in safe_scores.values():
+
+        for scores in scores.values():
             scores_flat = scores.view(-1)
             layer_size = scores_flat.numel()
             
@@ -920,15 +1034,15 @@ class AwqQuantizer:
         
         plt.subplot(1, 3, 1)
         plt.hist(scores_np, bins=100, edgecolor='black', alpha=0.7)
-        plt.xlabel('Safety Score')
+        plt.xlabel('Critical Score')
         plt.ylabel('Frequency')
-        plt.title(f'Safety Score Distribution (n={len(scores_np):,})')
+        plt.title(f'Critical Score Distribution (n={len(scores_np):,})')
         plt.yscale('log')
         
         plt.subplot(1, 3, 2)
         plt.hist(scores_np, bins=100, edgecolor='black', cumulative=True, 
                  density=True, alpha=0.7, color='green')
-        plt.xlabel('Safety Score')
+        plt.xlabel('Critical Score')
         plt.ylabel('Cumulative Probability')
         plt.title('Cumulative Distribution')
         plt.grid(True, alpha=0.3)
@@ -937,20 +1051,20 @@ class AwqQuantizer:
         non_zero_scores = scores_np[scores_np > 0]
         if len(non_zero_scores) > 0:
             plt.hist(non_zero_scores, bins=100, edgecolor='black', alpha=0.7, color='orange')
-            plt.xlabel('Safety Score')
+            plt.xlabel('Critical Score')
             plt.ylabel('Frequency')
             plt.title('Non-Zero Scores Only')
             plt.xscale('log')
             plt.yscale('log')
         
         plt.tight_layout()
-        plt.savefig('safety_score_distribution.png', dpi=150, bbox_inches='tight')
-        print(f"\nPlot saved as 'safety_score_distribution.png'")
+        plt.savefig('score_distribution.png', dpi=150, bbox_inches='tight')
+        print(f"\nPlot saved as 'score_distribution.png'")
         plt.close()
         
         print("\n=== Top 10 Layers by Mean Score ===")
         layer_stats = []
-        for name, scores in safe_scores.items():
+        for name, scores in scores.items():
             layer_stats.append({
                 'name': name,
                 'max': scores.max().item(),
@@ -965,5 +1079,5 @@ class AwqQuantizer:
     
         del sampled_scores
         clear_memory()
-        
-        return torch.cat([scores.view(-1) for scores in safe_scores.values()])
+
+        return torch.cat([scores.view(-1) for scores in scores.values()])
