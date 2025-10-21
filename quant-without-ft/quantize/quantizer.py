@@ -965,114 +965,117 @@ class AwqQuantizer:
         """
         print("\n=== Critical Score Analysis ===")
 
-        total_weights = sum(scores.numel() for scores in scores.values())
-        print(f"Total weights: {total_weights:,}")
-        
-        global_min = float('inf')
-        global_max = float('-inf')
-
-        for scores in scores.values():
-            global_min = min(global_min, scores.min().item())
-            global_max = max(global_max, scores.max().item())
-        
-        print(f"Min score: {global_min:.6f}")
-        print(f"Max score: {global_max:.6f}")
-        
-        running_sum = 0.0
-        for scores in scores.values():
-            running_sum += scores.sum().item()
-        mean_score = running_sum / total_weights
-        print(f"Mean score: {mean_score:.6f}")
-        
-        zero_count = 0
-        near_zero_count = 0
-        for scores in scores.values():
-            zero_count += (scores == 0).sum().item()
-            near_zero_count += (scores.abs() < 1e-6).sum().item()
-        
-        print(f"Zero values: {zero_count:,} ({100*zero_count/total_weights:.2f}%)")
-        print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/total_weights:.2f}%)")
-        
-        print("\n=== Creating Distribution Plot ===")
-        sample_size = min(10_000_000, total_weights)
-        print(f"Sampling {sample_size:,} weights for visualization...")
-        
-        sampled_scores = []
-        seen = 0
-
-        for scores in scores.values():
-            scores_flat = scores.view(-1)
-            layer_size = scores_flat.numel()
+        try:
+            total_weights = sum(score_tensor.numel() for score_tensor in scores.values())
+            print(f"Total weights: {total_weights:,}")
             
-            if seen + layer_size <= sample_size:
-                sampled_scores.append(scores_flat.cpu())
-                seen += layer_size
-            else:
-                remaining = sample_size - seen
-                if remaining > 0:
-                    indices = torch.randperm(layer_size)[:remaining]
-                    sampled_scores.append(scores_flat[indices].cpu())
-                    seen = sample_size
-                    break
-        
-        sampled_scores = torch.cat(sampled_scores)
-        
-        print(f"Computing percentiles on {sampled_scores.numel():,} samples...")
-        percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
-        for p in percentiles:
-            val = torch.quantile(sampled_scores.float(), p/100)
-            print(f"{p}th percentile: {val.item():.6f}")
-        
-        plt.figure(figsize=(12, 4))
-        
-        scores_np = sampled_scores.numpy()
-        
-        plt.subplot(1, 3, 1)
-        plt.hist(scores_np, bins=100, edgecolor='black', alpha=0.7)
-        plt.xlabel('Critical Score')
-        plt.ylabel('Frequency')
-        plt.title(f'Critical Score Distribution (n={len(scores_np):,})')
-        plt.yscale('log')
-        
-        plt.subplot(1, 3, 2)
-        plt.hist(scores_np, bins=100, edgecolor='black', cumulative=True, 
-                 density=True, alpha=0.7, color='green')
-        plt.xlabel('Critical Score')
-        plt.ylabel('Cumulative Probability')
-        plt.title('Cumulative Distribution')
-        plt.grid(True, alpha=0.3)
-        
-        plt.subplot(1, 3, 3)
-        non_zero_scores = scores_np[scores_np > 0]
-        if len(non_zero_scores) > 0:
-            plt.hist(non_zero_scores, bins=100, edgecolor='black', alpha=0.7, color='orange')
+            global_min = float('inf')
+            global_max = float('-inf')
+
+            for score_tensor in scores.values():
+                global_min = min(global_min, score_tensor.min().item())
+                global_max = max(global_max, score_tensor.max().item())
+            
+            print(f"Min score: {global_min:.6f}")
+            print(f"Max score: {global_max:.6f}")
+            
+            running_sum = 0.0
+            for score_tensor in scores.values():
+                running_sum += score_tensor.sum().item()
+            mean_score = running_sum / total_weights
+            print(f"Mean score: {mean_score:.6f}")
+            
+            zero_count = 0
+            near_zero_count = 0
+            for score_tensor in scores.values():
+                zero_count += (score_tensor == 0).sum().item()
+                near_zero_count += (score_tensor.abs() < 1e-6).sum().item()
+            
+            print(f"Zero values: {zero_count:,} ({100*zero_count/total_weights:.2f}%)")
+            print(f"Near-zero (<1e-6): {near_zero_count:,} ({100*near_zero_count/total_weights:.2f}%)")
+            
+            print("\n=== Creating Distribution Plot ===")
+            sample_size = min(10_000_000, total_weights)
+            print(f"Sampling {sample_size:,} weights for visualization...")
+            
+            sampled_scores = []
+            seen = 0
+
+            for score_tensor in scores.values():
+                scores_flat = score_tensor.view(-1)
+                layer_size = scores_flat.numel()
+                
+                if seen + layer_size <= sample_size:
+                    sampled_scores.append(scores_flat.cpu())
+                    seen += layer_size
+                else:
+                    remaining = sample_size - seen
+                    if remaining > 0:
+                        indices = torch.randperm(layer_size)[:remaining]
+                        sampled_scores.append(scores_flat[indices].cpu())
+                        seen = sample_size
+                        break
+            
+            sampled_scores = torch.cat(sampled_scores)
+            
+            print(f"Computing percentiles on {sampled_scores.numel():,} samples...")
+            percentiles = [10, 25, 50, 75, 90, 95, 99, 99.9]
+            for p in percentiles:
+                val = torch.quantile(sampled_scores.float(), p/100)
+                print(f"{p}th percentile: {val.item():.6f}")
+            
+            plt.figure(figsize=(12, 4))
+            
+            scores_np = sampled_scores.numpy()
+            
+            plt.subplot(1, 3, 1)
+            plt.hist(scores_np, bins=100, edgecolor='black', alpha=0.7)
             plt.xlabel('Critical Score')
             plt.ylabel('Frequency')
-            plt.title('Non-Zero Scores Only')
-            plt.xscale('log')
+            plt.title(f'Critical Score Distribution (n={len(scores_np):,})')
             plt.yscale('log')
+            
+            plt.subplot(1, 3, 2)
+            plt.hist(scores_np, bins=100, edgecolor='black', cumulative=True, 
+                    density=True, alpha=0.7, color='green')
+            plt.xlabel('Critical Score')
+            plt.ylabel('Cumulative Probability')
+            plt.title('Cumulative Distribution')
+            plt.grid(True, alpha=0.3)
+            
+            plt.subplot(1, 3, 3)
+            non_zero_scores = scores_np[scores_np > 0]
+            if len(non_zero_scores) > 0:
+                plt.hist(non_zero_scores, bins=100, edgecolor='black', alpha=0.7, color='orange')
+                plt.xlabel('Critical Score')
+                plt.ylabel('Frequency')
+                plt.title('Non-Zero Scores Only')
+                plt.xscale('log')
+                plt.yscale('log')
+            
+            plt.tight_layout()
+            plt.savefig('score_distribution.png', dpi=150, bbox_inches='tight')
+            print(f"\nPlot saved as 'score_distribution.png'")
+            plt.close()
+            
+            print("\n=== Top 10 Layers by Mean Score ===")
+            layer_stats = []
+            for name, score_tensor in scores.items():
+                layer_stats.append({
+                    'name': name,
+                    'max': score_tensor.max().item(),
+                    'mean': score_tensor.mean().item(),
+                })
+            
+            layer_stats.sort(key=lambda x: x['mean'], reverse=True)
+            for i, stat in enumerate(layer_stats[:10]):
+                print(f"{i+1}. {stat['name']}")
+                print(f"   Max: {stat['max']:.6f}, Mean: {stat['mean']:.6f}")
+            
         
-        plt.tight_layout()
-        plt.savefig('score_distribution.png', dpi=150, bbox_inches='tight')
-        print(f"\nPlot saved as 'score_distribution.png'")
-        plt.close()
-        
-        print("\n=== Top 10 Layers by Mean Score ===")
-        layer_stats = []
-        for name, scores in scores.items():
-            layer_stats.append({
-                'name': name,
-                'max': scores.max().item(),
-                'mean': scores.mean().item(),
-            })
-        
-        layer_stats.sort(key=lambda x: x['mean'], reverse=True)
-        for i, stat in enumerate(layer_stats[:10]):
-            print(f"{i+1}. {stat['name']}")
-            print(f"   Max: {stat['max']:.6f}, Mean: {stat['mean']:.6f}")
-        
-    
-        del sampled_scores
-        clear_memory()
+            del sampled_scores
+            clear_memory()
+        except Exception as e:
+            print(f"Error during score analysis: {e}")
 
-        return torch.cat([scores.view(-1) for scores in scores.values()])
+        return torch.cat([score_tensor.view(-1) for score_tensor in scores.values()])
