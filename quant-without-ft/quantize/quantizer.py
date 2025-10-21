@@ -75,7 +75,9 @@ class AwqQuantizer:
 
         if protect_safety and protect_fairness:
             raise ValueError("Cannot protect both safety and fairness at the same time for now.")
-
+        
+        self.protect_safety = protect_safety
+        self.protect_fairness = protect_fairness
 
     def _calculate_safescore(self, named_linears):
         """

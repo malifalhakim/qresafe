@@ -14,6 +14,8 @@ class AwqConfig(PushToHubMixin):
     version: str = field(default="gemm")
     config_file_name = "config.json"
     modules_to_not_convert: Optional[List] = None
+    protect_safety: bool = field(default=False)
+    protect_fairness: bool = field(default=False)
 
     @classmethod
     def from_dict(cls, quant_config: Dict = {}):
@@ -79,6 +81,8 @@ class AwqConfig(PushToHubMixin):
             "w_bit": self.w_bit,
             "version": self.version,
             "modules_to_not_convert": self.modules_to_not_convert,
+            "protect_safety": self.protect_safety,
+            "protect_fairness": self.protect_fairness,
         }
 
     def to_transformers_dict(self):
@@ -89,6 +93,8 @@ class AwqConfig(PushToHubMixin):
             "bits": self.w_bit,
             "version": self.version.lower(),
             "modules_to_not_convert": self.modules_to_not_convert,
+            "protect_safety": self.protect_safety,
+            "protect_fairness": self.protect_fairness,
         }
 
     def from_transformers_dict(self, transformers_dict: Dict):
@@ -99,4 +105,6 @@ class AwqConfig(PushToHubMixin):
             "w_bit": transformers_dict.get("bits"),
             "version": transformers_dict.get("version"),
             "modules_to_not_convert": transformers_dict.get("modules_to_not_convert"),
+            "protect_safety": transformers_dict.get("protect_safety", False),
+            "protect_fairness": transformers_dict.get("protect_fairness", False),
         }
