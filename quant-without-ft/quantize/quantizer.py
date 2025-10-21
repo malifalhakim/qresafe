@@ -316,55 +316,48 @@ class AwqQuantizer:
         return w
 
     def quantize(self):
-        if self.protect_safety:
-            print_str = "Calculating safety-critical weights..."
-        elif self.protect_fairness:
-            print_str = "Calculating fairness-critical weights..."
-
-        all_scores = {}
-        for i in tqdm(range(len(self.modules)), desc=print_str):
-            common_device = get_best_device()
-            self.modules[i] = self.modules[i].to(common_device)
-
+        all_named_linears = {}
+        for i in range(len(self.modules)):
             named_linears = get_named_linears(self.modules[i])
             named_linears = exclude_layers_to_not_quantize(
                 named_linears, self.modules_to_not_convert
             )
 
-            if len(named_linears) > 0:
-                if self.protect_fairness:
-                    module_scores = self._calculate_fairscore(named_linears)
-                elif self.protect_safety:
-                    module_scores = self._calculate_safescore(named_linears)
+            module_prefix = get_op_name(self.model, self.modules[i]) + "."
+            for name, layer in named_linears.items():
+                full_name = module_prefix + name
+                all_named_linears[full_name] = layer
 
-                module_prefix = get_op_name(self.model, self.modules[i]) + "."
-                for name, scores in module_scores.items():
-                    full_name = module_prefix + name
-                    all_scores[full_name] = scores
-            
-            self.modules[i] = self.modules[i].cpu()
-            clear_memory()
-        
+        if self.protect_safety:
+            print(f"Calculating safety-critical weights...")
+            all_scores = self._calculate_safescore(all_named_linears)
+        elif self.protect_fairness:
+            print(f"Calculating fairness-critical weights...")
+            all_scores = self._calculate_fairscore(all_named_linears)
+        else:
+            all_scores = {}
 
-        print("Aggregating scores...")
-        all_scores_tensor = self._analyze_scores(all_scores)
-        sample_size = min(1_000_000, all_scores_tensor.numel())
-        indices = torch.randint(0, all_scores_tensor.numel(), (sample_size,))
-        score_samples = all_scores_tensor.view(-1)[indices].cpu()
-
-
-        print("Finding threshold via sampling and sorting...")
-        tau = 0.6
-        k = int(score_samples.numel() * tau)
-        threshold = torch.topk(score_samples.float(), k, largest=True, sorted=False)[0].min()
-
-        del all_scores_tensor, score_samples
         clear_memory()
+        
+        if self.protect_safety or self.protect_fairness:
+            print("Aggregating scores...")
+            all_scores_tensor = self._analyze_scores(all_scores)
+            sample_size = min(1_000_000, all_scores_tensor.numel())
+            indices = torch.randint(0, all_scores_tensor.numel(), (sample_size,))
+            score_samples = all_scores_tensor.view(-1)[indices].cpu()
 
-        self.critical_threshold = threshold
-        self.critical_scores = all_scores
+            print("Finding threshold via sampling and sorting...")
+            tau = 0.6
+            k = int(score_samples.numel() * tau)
+            threshold = torch.topk(score_samples.float(), k, largest=True, sorted=False)[0].min()
 
-        print(f"Critical threshold: {threshold}")
+            del all_scores_tensor, score_samples
+            clear_memory()
+
+            self.critical_threshold = threshold
+            self.critical_scores = all_scores
+
+            print(f"Critical threshold: {threshold}")
 
         for i in tqdm(range(len(self.modules)), desc="AWQ"):
             # Move module and inputs to correct device
