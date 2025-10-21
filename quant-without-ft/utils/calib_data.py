@@ -69,7 +69,7 @@ def get_fairness_dataset(
     subset: str = "intersentence",
     split: str = "validation",
     tokenizer=None,
-    n_samples: int = 512
+    n_samples: int = 128
 ):
     dataset = load_dataset(dataset_name, subset, split=split)
     dataset = dataset.shuffle(seed=42)
@@ -95,7 +95,7 @@ def get_fairness_dataset(
 def get_safety_dataset(
     dataset_name: str = "walledai/AdvBench",
     split: str = "train",
-    n_samples: int = 512,
+    n_samples: int = 128,
     tokenizer = None
 ):
     dataset = load_dataset(dataset_name, split=split)
