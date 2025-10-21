@@ -4,7 +4,7 @@ import os
 
 model_path = 'google/gemma-7b-it'
 quant_path = 'google/gemma-7b-it-4bit'
-quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM" }
+quant_config = { "zero_point": True, "q_group_size": 128, "w_bit": 4, "version": "GEMM", "protect_safety": True, "protect_fairness": False }
 
 
 model = AutoAWQForCausalLM.from_pretrained(
