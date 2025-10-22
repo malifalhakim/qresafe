@@ -205,7 +205,7 @@ class AwqQuantizer:
             logits_stereo = outputs_stereo.logits
 
             context_len = context.size(1)
-            stereo_len = stereotype.size(1)
+            stereo_len = target_stereotype.size(1)
 
             prediction_logits_stereo = logits_stereo[:, context_len - 1: context_len - 1 + stereo_len, :]
             target_labels_stereo = target_stereotype
@@ -221,7 +221,7 @@ class AwqQuantizer:
             outputs_anti = self.model(full_sequence_anti)
             logits_anti = outputs_anti.logits
 
-            anti_stereo_len = antistereotype.size(1)
+            anti_stereo_len = target_antistereotype.size(1)
 
             prediction_logits_anti = logits_anti[:, context_len - 1: context_len - 1 + anti_stereo_len, :]
             target_labels_anti = target_antistereotype
