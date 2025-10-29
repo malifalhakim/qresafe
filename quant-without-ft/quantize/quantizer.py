@@ -138,6 +138,8 @@ class AwqQuantizer:
                 print(f"\nFirst batch loss: {loss.item():.6f}")
                 print(f"Loss requires_grad: {loss.requires_grad}")
                 print(f"Logits requires_grad: {logits.requires_grad}")
+                print(f"Target Token IDs: {target_labels[0].tolist()}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels[0].tolist()]}")
             
             loss.backward()
 

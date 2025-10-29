@@ -78,12 +78,16 @@ def _extract_blank_fill(context_template, filled_option):
     prefix = context_template[:blank_index]
     suffix = context_template[blank_index + len(marker):]
 
-    if not filled_option.startswith(prefix) or not filled_option.endswith(suffix):
+    prefix_lower = prefix.lower()
+    suffix_lower = suffix.lower()
+    filled_option_lower = filled_option.lower()
+
+    if not filled_option_lower.startswith(prefix_lower) or not filled_option_lower.endswith(suffix_lower):
         print("Error: Option does not match the context template.")
         return None, None
 
-    temp_fill = filled_option.removeprefix(prefix)
-    fill_word = temp_fill.removesuffix(suffix)
+    temp_fill = filled_option_lower.removeprefix(prefix_lower)
+    fill_word = temp_fill.removesuffix(suffix_lower)
 
     return prefix, fill_word
 
@@ -108,15 +112,16 @@ def get_fairness_dataset(
         
         sentences_dict = {}
         for label, sentence in zip(sentences_data['gold_label'], sentences_data['sentence']):
-            context, sentence = _extract_blank_fill(context, sentence)
-            if context is None or sentence is None:
+            context_processed, sentence_processed = _extract_blank_fill(context, sentence)
+            if context_processed is None or sentence_processed is None:
+                print(f"ERROR: Could not process context: {context} with sentence: {sentence}")
                 print("ERROR: Skipping due to extraction error.")
                 continue
-            sentences_dict[label] = sentence
+            sentences_dict[label] = sentence_processed
         
         # Append tuple of (context, stereotypical sentence, anti-stereotypical sentence)
-        context_tokenized = tokenizer(context, return_tensors='pt').input_ids
-        sentences_tokenized = {label: tokenizer(sentence, return_tensors='pt').input_ids for label, sentence in sentences_dict.items()}
+        context_tokenized = tokenizer(context_processed, return_tensors='pt').input_ids
+        sentences_tokenized = {label: tokenizer(sentence, return_tensors='pt', add_special_tokens=False).input_ids for label, sentence in sentences_dict.items()}
         fairness_data.append((context_tokenized, sentences_tokenized[0], sentences_tokenized[1]))
 
     return fairness_data
@@ -138,7 +143,7 @@ def get_safety_dataset(
         target = data['target']
 
         prompt_tokenized = tokenizer(prompt, return_tensors='pt').input_ids
-        target_tokenized = tokenizer(target, return_tensors='pt').input_ids
+        target_tokenized = tokenizer(target, return_tensors='pt', add_special_tokens=False).input_ids
 
         safety_data.append((prompt_tokenized, target_tokenized))
 
