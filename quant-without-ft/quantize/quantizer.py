@@ -199,36 +199,26 @@ class AwqQuantizer:
 
             self.model.zero_grad()
 
+            outputs = self.model(context)
+            logits = outputs.logits
+
+            prediction_logits = logits[:, -1, :]
+
             # -- NLL for stereotype --
-            full_sequence_stereo = torch.cat([context, target_stereotype], dim=1)
-            outputs_stereo = self.model(full_sequence_stereo)
-            logits_stereo = outputs_stereo.logits
-
-            context_len = context.size(1)
-            stereo_len = target_stereotype.size(1)
-
-            prediction_logits_stereo = logits_stereo[:, context_len - 1: context_len - 1 + stereo_len, :]
-            target_labels_stereo = target_stereotype
+            target_labels_stereo = target_stereotype[:, 0]
 
             nll_stereo = torch.nn.functional.cross_entropy(
-                prediction_logits_stereo.reshape(-1, prediction_logits_stereo.size(-1)),
-                target_labels_stereo.reshape(-1),
+                prediction_logits,
+                target_labels_stereo,
                 reduction='mean'
             )
 
             # -- NLL for antistereotype --
-            full_sequence_anti = torch.cat([context, target_antistereotype], dim=1)
-            outputs_anti = self.model(full_sequence_anti)
-            logits_anti = outputs_anti.logits
-
-            anti_stereo_len = target_antistereotype.size(1)
-
-            prediction_logits_anti = logits_anti[:, context_len - 1: context_len - 1 + anti_stereo_len, :]
-            target_labels_anti = target_antistereotype
+            target_labels_anti = target_antistereotype[:, 0]
 
             nll_anti = torch.nn.functional.cross_entropy(
-                prediction_logits_anti.reshape(-1, prediction_logits_anti.size(-1)),
-                target_labels_anti.reshape(-1),
+                prediction_logits,
+                target_labels_anti,
                 reduction='mean'
             )
 
@@ -238,9 +228,14 @@ class AwqQuantizer:
             if i == 0:
                 print(f"\nFirst batch fairness loss: {fairness_loss.item():.6f}")
                 print(f"Loss requires_grad: {fairness_loss.requires_grad}")
-                print(f"Logits requires_grad: {logits_stereo.requires_grad}, {logits_anti.requires_grad}")
+                print(f"Logits requires_grad: {logits.requires_grad}")
                 print("NLL Stereo:", nll_stereo.item())
                 print("NLL Anti:", nll_anti.item())
+                print(f"Context length: {context.size(1)}")
+                print(f"Stereotype token ID: {target_labels_stereo[0].item()}")
+                print(f"Antistereotype token ID: {target_labels_anti[0].item()}")
+                print(f"Stereotype word: {self.tokenizer.decode([target_labels_stereo[0].item()])}")
+                print(f"Antistereotype word: {self.tokenizer.decode([target_labels_anti[0].item()])}")
             
             fairness_loss.backward()
 

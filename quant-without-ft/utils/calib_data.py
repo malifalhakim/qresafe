@@ -64,13 +64,38 @@ def get_calib_dataset(
         cat_samples[:, i * max_seq_len : (i + 1) * max_seq_len] for i in range(n_split)
     ]
 
+def _extract_blank_fill(context_template, filled_option):
+    """
+    Extracts the part of the context before BLANK and the word that fills it.
+    """
+    marker = "BLANK"
+    blank_index = context_template.find(marker)
+    
+    if blank_index == -1:
+        print(f"Error: Marker '{marker}' not found in context.")
+        return None, None
+
+    prefix = context_template[:blank_index]
+    suffix = context_template[blank_index + len(marker):]
+
+    if not filled_option.startswith(prefix) or not filled_option.endswith(suffix):
+        print("Error: Option does not match the context template.")
+        return None, None
+
+    temp_fill = filled_option.removeprefix(prefix)
+    fill_word = temp_fill.removesuffix(suffix)
+
+    return prefix, fill_word
+
 def get_fairness_dataset(
-    dataset_name: str = "McGill-NLP/stereoset",
-    subset: str = "intersentence",
-    split: str = "validation",
+    dataset_name: str = "Amadeus99/filtered_stereoset",
+    subset: str = "default",
+    split: str = "train",
     tokenizer=None,
     n_samples: int = 128
-):
+):  
+    if n_samples <= 128:
+        subset = "sample"
     dataset = load_dataset(dataset_name, subset, split=split)
     dataset = dataset.shuffle(seed=42)
     if n_samples is not None:
@@ -83,6 +108,10 @@ def get_fairness_dataset(
         
         sentences_dict = {}
         for label, sentence in zip(sentences_data['gold_label'], sentences_data['sentence']):
+            context, sentence = _extract_blank_fill(context, sentence)
+            if context is None or sentence is None:
+                print("ERROR: Skipping due to extraction error.")
+                continue
             sentences_dict[label] = sentence
         
         # Append tuple of (context, stereotypical sentence, anti-stereotypical sentence)
