@@ -21,7 +21,7 @@ For [`quant-without-ft`](./quant-with-ft/)
 cd quant-without-ft
 conda create -n qresafe python=3.10 -y && conda activate qresafe
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 #Support the latest version of 2.x that matches your CUDA version
-pip install tabulate protobuf evaluate scipy transformers accelerate lm_eval hf_transfer matplotlib
+pip install tabulate protobuf evaluate scipy transformers accelerate lm_eval hf_transfer matplotlib backpack-for-pytorch
 ```
 For [`quant-with-ft`](./quant-with-ft/)
 

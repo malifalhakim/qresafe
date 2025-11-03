@@ -1,6 +1,6 @@
 import torch
 import logging
-from typing import List, Union
+from typing import List, Optional, Union
 from datasets import load_dataset
 
 
@@ -92,14 +92,15 @@ def _extract_blank_fill(context_template, filled_option):
     return prefix, fill_word
 
 def get_fairness_dataset(
-    dataset_name: str = "Amadeus99/filtered_stereoset",
-    subset: str = "default",
-    split: str = "train",
+    dataset_name: str = "McGill-NLP/stereoset",
+    subset: str = "intersentence",
+    split: str = "validation",
     tokenizer=None,
     n_samples: int = 128
 ):  
-    if n_samples <= 128:
+    if n_samples <= 128 and dataset_name == "Amadeus99/filtered_stereoset":
         subset = "sample"
+
     dataset = load_dataset(dataset_name, subset, split=split)
     dataset = dataset.shuffle(seed=42)
     if n_samples is not None:
@@ -107,22 +108,39 @@ def get_fairness_dataset(
     
     fairness_data = []
     for data in dataset:
-        context = data['context']
+        context = data['context'].strip()
         sentences_data = data['sentences']
         
         sentences_dict = {}
         for label, sentence in zip(sentences_data['gold_label'], sentences_data['sentence']):
+            if subset == "intersentence":
+                sentences_dict[label] = sentence.strip()
+                context_processed = context
+                continue
+
             context_processed, sentence_processed = _extract_blank_fill(context, sentence)
             if context_processed is None or sentence_processed is None:
                 print(f"ERROR: Could not process context: {context} with sentence: {sentence}")
                 print("ERROR: Skipping due to extraction error.")
                 continue
+
             sentences_dict[label] = sentence_processed
-        
-        # Append tuple of (context, stereotypical sentence, anti-stereotypical sentence)
-        context_tokenized = tokenizer(context_processed, return_tensors='pt').input_ids
-        sentences_tokenized = {label: tokenizer(sentence, return_tensors='pt', add_special_tokens=False).input_ids for label, sentence in sentences_dict.items()}
-        fairness_data.append((context_tokenized, sentences_tokenized[0], sentences_tokenized[1]))
+
+        full_stereotype_sentence = f"{context_processed} {sentences_dict[0]}"
+        full_anti_stereotype_sentence = f"{context_processed} {sentences_dict[1]}"
+
+        context_tokens = tokenizer(context_processed, return_tensors='pt').input_ids
+        context_length = context_tokens.shape[1]
+
+        full_stereotype_tokens = tokenizer(full_stereotype_sentence, return_tensors='pt').input_ids
+        stereotype_label = full_stereotype_tokens.clone()
+        stereotype_label[:, :context_length] = -100
+
+        full_anti_stereotype_tokens = tokenizer(full_anti_stereotype_sentence, return_tensors='pt').input_ids
+        anti_stereotype_label = full_anti_stereotype_tokens.clone()
+        anti_stereotype_label[:, :context_length] = -100
+
+        fairness_data.append((full_stereotype_tokens, stereotype_label, full_anti_stereotype_tokens, anti_stereotype_label))
 
     return fairness_data
 
@@ -130,6 +148,7 @@ def get_safety_dataset(
     dataset_name: str = "walledai/AdvBench",
     split: str = "train",
     n_samples: int = 128,
+    use_template: bool = True,
     tokenizer = None
 ):
     dataset = load_dataset(dataset_name, split=split)
@@ -142,9 +161,92 @@ def get_safety_dataset(
         prompt = data['prompt']
         target = data['target']
 
-        prompt_tokenized = tokenizer(prompt, return_tensors='pt').input_ids
-        target_tokenized = tokenizer(target, return_tensors='pt', add_special_tokens=False).input_ids
+        if use_template:
+            message = [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": target}
+            ]
 
-        safety_data.append((prompt_tokenized, target_tokenized))
+            input_ids = tokenizer.apply_chat_template(
+                message,
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors="pt"
+            )
+
+            prompt_message = message[:-1]
+            prompt_ids = tokenizer.apply_chat_template(
+                prompt_message,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt"
+            )
+            prompt_length = prompt_ids.shape[1]
+            label = input_ids.clone()
+            label[:, :prompt_length] = -100
+            target_tokenized = label
+            safety_data.append((input_ids, target_tokenized))
+        else:
+            prompt_tokenized = tokenizer(prompt, return_tensors='pt').input_ids
+            target_tokenized = tokenizer(target, return_tensors='pt', add_special_tokens=False).input_ids
+
+            safety_data.append((prompt_tokenized, target_tokenized))
 
     return safety_data
+
+def get_general_dataset(
+    dataset_name: str = "wikimedia/wikipedia",
+    subset: str = "20231101.en",
+    split: str = "train",
+    n_samples: int = 128,
+    use_template: bool = False,
+    text_column: str = "text",
+    tokenizer=None,
+    prompt_column: Optional[str] = None,
+):
+    if subset:
+        dataset = load_dataset(dataset_name, subset, split=split)
+    else:
+        dataset = load_dataset(dataset_name, split=split)
+
+    dataset = dataset.shuffle(seed=42)
+    if n_samples is not None:
+        dataset = dataset.select(range(n_samples))
+
+    general_data = []
+    for data in dataset:
+        if use_template and prompt_column is not None:
+            message = [
+                {"role": "user", "content": data[prompt_column]},
+                {"role": "assistant", "content": data[text_column]}
+            ]
+
+            input_ids = tokenizer.apply_chat_template(
+                message,
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors="pt"
+            )
+
+            prompt_message = message[:-1]
+
+            prompt_ids = tokenizer.apply_chat_template(
+                prompt_message,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt"
+            )
+
+            prompt_length = prompt_ids.shape[1]
+            label = input_ids.clone()
+            label[:, :prompt_length] = -100
+            label_ids = label
+            general_data.append((input_ids, label_ids))
+        else:
+            text = data[text_column]
+            input_ids = tokenizer(text, return_tensors="pt").input_ids
+            general_data.append((input_ids, None))
+
+    return general_data
+
+    
