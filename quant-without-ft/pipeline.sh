@@ -20,6 +20,16 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# --- Logging Configuration ---
+LOG_DIR="./logs/"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/pipeline_$(date +'%Y%m%d_%H%M%S').log"
+
+exec > >(tee -a "${LOG_FILE}")
+exec 2>&1
+
+echo "Logging output to ${LOG_FILE}"
+
 # Function to print colored output
 print_info() {
     echo -e "${BLUE}[INFO]${NC} $1"

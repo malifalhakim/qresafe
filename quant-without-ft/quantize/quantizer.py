@@ -139,8 +139,17 @@ class AwqQuantizer:
             outputs_gen = self.model(input_gen)
             logits_gen = outputs_gen.logits
 
-            prediction_logits_gen = logits_gen
-            target_labels_gen = target_gen
+            prediction_logits_gen = logits_gen[:, :-1, :]
+            target_labels_gen = target_gen[:, 1:]
+
+            if i == 0:
+                print(f"Input Gen Token IDs: {input_gen}")
+                print(f"Target Gen Token IDs: {target_gen}")
+                print(f"Prediction Logits Shape: {prediction_logits_gen.shape}")
+                print(f"Target Labels Shape: {target_labels_gen.shape}")
+                print(f"Input Gen Shape: {input_gen.shape}")
+                print(f"Logits Shape: {logits_gen.shape}")
+                print(f"Target Gen Shape: {target_gen.shape}")
 
             assert prediction_logits_gen.size(1) == target_labels_gen.size(1), \
                 f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
@@ -193,8 +202,17 @@ class AwqQuantizer:
             outputs_safe = self.model(input_safe)
             logits_safe = outputs_safe.logits
 
-            prediction_logits_safe = logits_safe
-            target_labels_safe = target_safe
+            prediction_logits_safe = logits_safe[:, :-1, :]
+            target_labels_safe = target_safe[:, 1:]
+
+            if i == 0:
+                print(f"Input Safe Token IDs: {input_safe}")
+                print(f"Target Safe Token IDs: {target_safe}")
+                print(f"Prediction Logits Shape: {prediction_logits_safe.shape}")
+                print(f"Target Labels Shape: {target_labels_safe.shape}")
+                print(f"Input Safe Shape: {input_safe.shape}")
+                print(f"Logits Shape: {logits_safe.shape}")
+                print(f"Target Safe Shape: {target_safe.shape}")
 
             assert prediction_logits_safe.size(1) == target_labels_safe.size(1), \
                 f"Prediction length {prediction_logits_safe.size(1)} does not match target length {target_labels_safe.size(1)}"
@@ -282,6 +300,14 @@ class AwqQuantizer:
             prediction_logits_gen = logits_gen[:, :-1, :]
             target_labels_gen = sentence_gen[:, 1:]
 
+            if i == 0:
+                print(f"Input Gen Token IDs: {sentence_gen}")
+                print(f"Prediction Logits Shape: {prediction_logits_gen.shape}")
+                print(f"Target Labels Shape: {target_labels_gen.shape}")
+                print(f"Input Gen Shape: {sentence_gen.shape}")
+                print(f"Logits Shape: {logits_gen.shape}")
+
+
             assert prediction_logits_gen.size(1) == target_labels_gen.size(1), \
                 f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
             
@@ -333,8 +359,17 @@ class AwqQuantizer:
             outputs_fair = self.model(input_stereotype)
             logits_fair = outputs_fair.logits
 
-            prediction_logits_fair = logits_fair
-            target_labels_fair = target_stereotype
+            prediction_logits_fair = logits_fair[:, :-1, :]
+            target_labels_fair = target_stereotype[:, 1:]
+
+            if i == 0:
+                print(f"Input Fair Token IDs: {input_stereotype}")
+                print(f"Target Fair Token IDs: {target_stereotype}")
+                print(f"Prediction Logits Shape: {prediction_logits_fair.shape}")
+                print(f"Target Labels Shape: {target_labels_fair.shape}")
+                print(f"Input Fair Shape: {input_stereotype.shape}")
+                print(f"Logits Shape: {logits_fair.shape}")
+                print(f"Target Fair Shape: {target_stereotype.shape}")
 
             assert prediction_logits_fair.size(1) == target_labels_fair.size(1), \
                 f"Prediction length {prediction_logits_fair.size(1)} does not match target length {target_labels_fair.size(1)}"
