@@ -186,11 +186,6 @@ def get_safety_dataset(
             label[:, :prompt_length] = -100
             target_tokenized = label
             safety_data.append((input_ids, target_tokenized))
-        else:
-            prompt_tokenized = tokenizer(prompt, return_tensors='pt').input_ids
-            target_tokenized = tokenizer(target, return_tensors='pt', add_special_tokens=False).input_ids
-
-            safety_data.append((prompt_tokenized, target_tokenized))
 
     return safety_data
 
