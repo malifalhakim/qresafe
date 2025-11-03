@@ -24,6 +24,8 @@ from utils.module import (
     exclude_layers_to_not_quantize,
 )
 
+from backpack import backpack, extend
+from backpack.extensions import DiagHessian, DiagGGNExact
 
 class AwqQuantizer:
     def __init__(
@@ -78,22 +80,115 @@ class AwqQuantizer:
         
         self.protect_safety = protect_safety
         self.protect_fairness = protect_fairness
+        self.beta = 1.0
+
+    # UNCOMMENT to use SNIP-Based Calculation
+    # def _calculate_safescore(self, named_linears):
+    #     """
+    #     Calculates the SNIP-based SafeScore for each weight in the model.
+    #     """
+    #     print(f"Calculating safety scores for {len(named_linears)} layers")
+    #     calib_data = get_safety_dataset(tokenizer=self.tokenizer)
+
+    #     prompts = []
+    #     targets = []
+    #     for prompt, target in calib_data:
+    #         prompts.append(prompt)
+    #         targets.append(target)
+
+    #     device = get_best_device()
+    #     self.model.to(device)
+
+    #     accumulated_scores = {
+    #         name: torch.zeros_like(module.weight, device='cpu')
+    #         for name, module in named_linears.items()
+    #     }
+
+    #     num_data = 0
+    #     clear_memory()
+
+    #     for i in tqdm(range(0, len(prompts)), desc="Calculating Gradients"):
+    #         prompt = prompts[i].to(device)
+    #         target = targets[i].to(device)
+
+    #         num_data += 1
+    #         self.model.train()
+            
+    #         for module in named_linears.values():
+    #             module.weight.requires_grad = True
+            
+    #         self.model.zero_grad()
+    #         full_sequence = torch.cat([prompt, target], dim=1)
+
+    #         outputs = self.model(full_sequence)
+    #         logits = outputs.logits
+            
+    #         prompt_len = prompt.size(1)
+    #         target_len = target.size(1)
+
+    #         prediction_logits = logits[:, prompt_len - 1: prompt_len - 1 + target_len, :]
+    #         target_labels = target
+
+    #         assert prediction_logits.size(1) == target_labels.size(1), \
+    #             f"Prediction length {prediction_logits.size(1)} does not match target length {target_labels.size(1)}"
+            
+    #         loss = torch.nn.functional.cross_entropy(
+    #             prediction_logits.reshape(-1, prediction_logits.size(-1)),
+    #             target_labels.reshape(-1),
+    #             reduction='mean'
+    #         )
+            
+    #         if i == 0:
+    #             print(f"\nFirst batch loss: {loss.item():.6f}")
+    #             print(f"Loss requires_grad: {loss.requires_grad}")
+    #             print(f"Logits requires_grad: {logits.requires_grad}")
+    #             print(f"Target Token IDs: {target_labels[0].tolist()}")
+    #             print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels[0].tolist()]}")
+            
+    #         loss.backward()
+
+    #         for name, module in named_linears.items():
+    #             if module.weight.grad is not None:
+    #                 current_score = torch.abs(module.weight.data * module.weight.grad.data)
+    #                 accumulated_scores[name] += current_score.cpu()
+    #                 module.weight.grad = None 
+                
+    #             module.weight.requires_grad = False
+
+    #         clear_memory()
+
+    #     print("Calculating final safety scores...")
+    #     safe_scores = {}
+    #     if num_data == 0:
+    #         raise ValueError("No batches were processed for safety score calculation.")
+
+    #     for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
+    #         safe_scores[name] = acc_score / num_data
+
+    #     self.model.eval()
+    #     clear_memory()
+    #     return safe_scores
 
     def _calculate_safescore(self, named_linears):
         """
-        Calculates the SNIP-based SafeScore for each weight in the model.
+        Calculate safe score based on adaptation of "FairQuantize" method. 
+        Importance_score = H_general - Beta * H_safety, where H is hessian.
         """
         print(f"Calculating safety scores for {len(named_linears)} layers")
-        calib_data = get_safety_dataset(tokenizer=self.tokenizer)
+        general_data = get_calib_dataset(data=self.calib_data, tokenizer=self.tokenizer)
+        safety_data = get_safety_dataset(tokenizer=self.tokenizer)
 
-        prompts = []
-        targets = []
-        for prompt, target in calib_data:
-            prompts.append(prompt)
-            targets.append(target)
+        prompts_safety = []
+        targets_safety = []
+        for prompt, target in safety_data:
+            prompts_safety.append(prompt)
+            targets_safety.append(target)
 
         device = get_best_device()
         self.model.to(device)
+
+        self.model = extend(self.model)
+        criterion = extend(torch.nn.CrossEntropyLoss())
 
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
@@ -103,82 +198,135 @@ class AwqQuantizer:
         num_data = 0
         clear_memory()
 
-        for i in tqdm(range(0, len(prompts)), desc="Calculating Gradients"):
-            prompt = prompts[i].to(device)
-            target = targets[i].to(device)
+        for i in tqdm(range(0, len(general_data)), desc="Calculating Hessians"):
+            sentence_gen = general_data[i].to(device)
 
             num_data += 1
             self.model.train()
+
+            for module in named_linears.values():
+                module.weight.requires_grad = True
+
+            self.model.zero_grad()
+            outputs_gen = self.model(sentence_gen)
+            logits_gen = outputs_gen.logits
+
+            prediction_logits_gen = logits_gen[:, :-1, :]
+            target_labels_gen = sentence_gen[:, 1:]
+
+            assert prediction_logits_gen.size(1) == target_labels_gen.size(1), \
+                f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
             
+            loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1), reduction='mean')
+            with backpack(DiagHessian()):
+                loss_gen.backward()
+
+            if i == 0:
+                print(f"\nFirst general batch loss: {loss_gen.item():.6f}")
+                print(f"Loss requires_grad: {loss_gen.requires_grad}")
+                print(f"Logits requires_grad: {logits_gen.requires_grad}")
+                print(f"Target Token IDs: {target_labels_gen[0].tolist()}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist()]}")
+
+            for name, module in named_linears.items():
+                if module.weight.grad is not None:
+                    hessian_gen = module.weight.diag_h
+                    accumulated_scores[name] += hessian_gen.cpu()
+                    module.weight.grad = None 
+                
+                module.weight.requires_grad = False
+
+            clear_memory()
+        
+        general_scores = {}
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
+            general_scores[name] = acc_score / num_data
+
+        accumulated_scores = {
+            name: torch.zeros_like(module.weight, device='cpu')
+            for name, module in named_linears.items()
+        }
+
+        num_data = 0
+        clear_memory()
+
+        for i in tqdm(range(0, len(prompts_safety)), desc="Calculating Hessians"):
+            prompt_safe = prompts_safety[i].to(device)
+            target_safe = targets_safety[i].to(device)
+
+            num_data += 1
+            self.model.train()
+
             for module in named_linears.values():
                 module.weight.requires_grad = True
             
             self.model.zero_grad()
-            full_sequence = torch.cat([prompt, target], dim=1)
+            full_sequence_gen = torch.cat([prompt_safe, target_safe], dim=1)
 
-            outputs = self.model(full_sequence)
-            logits = outputs.logits
-            
-            prompt_len = prompt.size(1)
-            target_len = target.size(1)
+            outputs_safe = self.model(full_sequence_gen)
+            logits_safe = outputs_safe.logits
 
-            prediction_logits = logits[:, prompt_len - 1: prompt_len - 1 + target_len, :]
-            target_labels = target
+            prompt_len_safe = prompt_safe.size(1)
+            target_len_safe = target_safe.size(1)
 
-            assert prediction_logits.size(1) == target_labels.size(1), \
-                f"Prediction length {prediction_logits.size(1)} does not match target length {target_labels.size(1)}"
+            prediction_logits_safe = logits_safe[:, prompt_len_safe - 1: prompt_len_safe - 1 + target_len_safe, :]
+            target_labels_safe = target_safe
+
+            assert prediction_logits_safe.size(1) == target_labels_safe.size(1), \
+                f"Prediction length {prediction_logits_safe.size(1)} does not match target length {target_labels_safe.size(1)}"
             
-            loss = torch.nn.functional.cross_entropy(
-                prediction_logits.reshape(-1, prediction_logits.size(-1)),
-                target_labels.reshape(-1),
-                reduction='mean'
-            )
-            
+            loss_safe = criterion(prediction_logits_safe.view(-1, prediction_logits_safe.size(-1)), target_labels_safe.view(-1), reduction='mean')
+            with backpack(DiagHessian()):
+                loss_safe.backward()
+
             if i == 0:
-                print(f"\nFirst batch loss: {loss.item():.6f}")
-                print(f"Loss requires_grad: {loss.requires_grad}")
-                print(f"Logits requires_grad: {logits.requires_grad}")
-                print(f"Target Token IDs: {target_labels[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels[0].tolist()]}")
-            
-            loss.backward()
+                print(f"\nFirst safety batch loss: {loss_safe.item():.6f}")
+                print(f"Loss requires_grad: {loss_safe.requires_grad}")
+                print(f"Logits requires_grad: {logits_safe.requires_grad}")
+                print(f"Target Token IDs: {target_labels_safe[0].tolist()}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_safe[0].tolist()]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    current_score = torch.abs(module.weight.data * module.weight.grad.data)
-                    accumulated_scores[name] += current_score.cpu()
+                    hessian_safe = module.weight.diag_h
+                    accumulated_scores[name] += hessian_safe.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
 
             clear_memory()
 
-        print("Calculating final safety scores...")
-        safe_scores = {}
-        if num_data == 0:
-            raise ValueError("No batches were processed for safety score calculation.")
+        safety_scores = {}
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging safety scores"):
+            safety_scores[name] = acc_score / num_data
 
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
-            safe_scores[name] = acc_score / num_data
+        print("Calculating final importance scores...")
+        importance_scores = {}
+        for name in general_scores.keys():
+            importance_scores[name] = general_scores[name] - self.beta * safety_scores[name]
 
         self.model.eval()
         clear_memory()
-        return safe_scores
+        return importance_scores
     
     def _calculate_fairscore(self, named_linears):
-        """Calculate FairScore for each weight in the model."""
-        calib_data = get_fairness_dataset(tokenizer=self.tokenizer)
+        """
+        Calculate FairScore for each weight in the model.
+        """
+        general_data = get_calib_dataset(data=self.calib_data, tokenizer=self.tokenizer)
+        fairness_data = get_fairness_dataset(tokenizer=self.tokenizer)
 
         contexts = []
         stereotypes = []
-        antistereotypes = []
-        for context, stereotype, antistereotype in calib_data:
+        for context, stereotype, _ in fairness_data:
             contexts.append(context)
             stereotypes.append(stereotype)
-            antistereotypes.append(antistereotype)
-        
+
         device = get_best_device()
         self.model.to(device)
+
+        self.model = extend(self.model)
+        criterion = extend(torch.nn.CrossEntropyLoss())
 
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
@@ -188,80 +336,216 @@ class AwqQuantizer:
         num_data = 0
         clear_memory()
 
-        for i in tqdm(range(0, len(contexts)), desc="Calculating Gradients"):
-            context = contexts[i].to(device)
-            target_stereotype = stereotypes[i].to(device)
-            target_antistereotype = antistereotypes[i].to(device)
+        for i in tqdm(range(0, len(general_data)), desc="Calculating Hessians"):
+            sentence_gen = general_data[i].to(device)
 
             num_data += 1
             self.model.train()
-            
+
             for module in named_linears.values():
                 module.weight.requires_grad = True
 
             self.model.zero_grad()
+            outputs_gen = self.model(sentence_gen)
+            logits_gen = outputs_gen.logits
 
-            outputs = self.model(context)
-            logits = outputs.logits
+            prediction_logits_gen = logits_gen[:, :-1, :]
+            target_labels_gen = sentence_gen[:, 1:]
 
-            prediction_logits = logits[:, -1, :]
-
-            # -- NLL for stereotype --
-            target_labels_stereo = target_stereotype[:, 0]
-
-            nll_stereo = torch.nn.functional.cross_entropy(
-                prediction_logits,
-                target_labels_stereo,
-                reduction='mean'
-            )
-
-            # -- NLL for antistereotype --
-            target_labels_anti = target_antistereotype[:, 0]
-
-            nll_anti = torch.nn.functional.cross_entropy(
-                prediction_logits,
-                target_labels_anti,
-                reduction='mean'
-            )
-
-            # -- Fairness loss --
-            fairness_loss = torch.abs(nll_stereo - nll_anti)
+            assert prediction_logits_gen.size(1) == target_labels_gen.size(1), \
+                f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
+            
+            loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1), reduction='mean')
+            with backpack(DiagHessian()):
+                loss_gen.backward()
 
             if i == 0:
-                print(f"\nFirst batch fairness loss: {fairness_loss.item():.6f}")
-                print(f"Loss requires_grad: {fairness_loss.requires_grad}")
-                print(f"Logits requires_grad: {logits.requires_grad}")
-                print("NLL Stereo:", nll_stereo.item())
-                print("NLL Anti:", nll_anti.item())
-                print(f"Context length: {context.size(1)}")
-                print(f"Stereotype token ID: {target_labels_stereo[0].item()}")
-                print(f"Antistereotype token ID: {target_labels_anti[0].item()}")
-                print(f"Stereotype word: {self.tokenizer.decode([target_labels_stereo[0].item()])}")
-                print(f"Antistereotype word: {self.tokenizer.decode([target_labels_anti[0].item()])}")
-            
-            fairness_loss.backward()
+                print(f"\nFirst general batch loss: {loss_gen.item():.6f}")
+                print(f"Loss requires_grad: {loss_gen.requires_grad}")
+                print(f"Logits requires_grad: {logits_gen.requires_grad}")
+                print(f"Target Token IDs: {target_labels_gen[0].tolist()}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist()]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    current_score = torch.abs(module.weight.data * module.weight.grad.data)
-                    accumulated_scores[name] += current_score.cpu()
+                    hessian_gen = module.weight.diag_h
+                    accumulated_scores[name] += hessian_gen.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
-            
+
             clear_memory()
 
-        print("Calculating final fairness scores...")
-        fair_scores = {}
-        if num_data == 0:
-            raise ValueError("No batches were processed for fairness score calculation.")
-        
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
-            fair_scores[name] = acc_score / num_data
+        general_scores = {}
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
+            general_scores[name] = acc_score / num_data
+
+        accumulated_scores = {
+            name: torch.zeros_like(module.weight, device='cpu')
+            for name, module in named_linears.items()
+        }
+
+        num_data = 0
+        clear_memory()
+
+        for i in tqdm(range(0, len(contexts)), desc="Calculating Hessians"):
+            context = contexts[i].to(device)
+            target_stereotype = stereotypes[i].to(device)
+
+            num_data += 1
+            self.model.train()
+
+            for module in named_linears.values():
+                module.weight.requires_grad = True
+
+            self.model.zero_grad()
+            full_sequence_fair = torch.cat([context, target_stereotype], dim=1)
+
+            outputs_fair = self.model(full_sequence_fair)
+            logits_fair = outputs_fair.logits
+
+            prompt_len_fair = context.size(1)
+            target_len_fair = target_stereotype.size(1)
+
+            prediction_logits_fair = logits_fair[:, prompt_len_fair - 1: prompt_len_fair - 1 + target_len_fair, :]
+            target_labels_fair = target_stereotype
+
+            assert prediction_logits_fair.size(1) == target_labels_fair.size(1), \
+                f"Prediction length {prediction_logits_fair.size(1)} does not match target length {target_labels_fair.size(1)}"
+            
+            loss_fair = criterion(prediction_logits_fair.view(-1, prediction_logits_fair.size(-1)), target_labels_fair.view(-1), reduction='mean')
+            with backpack(DiagHessian()):
+                loss_fair.backward()
+
+            if i == 0:
+                print(f"\nFirst fairness batch loss: {loss_fair.item():.6f}")
+                print(f"Loss requires_grad: {loss_fair.requires_grad}")
+                print(f"Logits requires_grad: {logits_fair.requires_grad}")
+                print(f"Target Token IDs: {target_labels_fair[0].tolist()}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_fair[0].tolist()]}")
+
+            for name, module in named_linears.items():
+                if module.weight.grad is not None:
+                    hessian_fair = module.weight.diag_h
+                    accumulated_scores[name] += hessian_fair.cpu()
+                    module.weight.grad = None 
+                
+                module.weight.requires_grad = False
+
+            clear_memory()
+
+        fairness_scores = {}
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging fairness scores"):
+            fairness_scores[name] = acc_score / num_data
+
+        print("Calculating final importance scores...")
+        importance_scores = {}
+        for name in general_scores.keys():
+            importance_scores[name] = general_scores[name] - self.beta * fairness_scores[name]
 
         self.model.eval()
         clear_memory()
-        return fair_scores
+        return importance_scores
+
+    
+    # UNCOMMENT to use SNIP-Based Calculation
+    # def _calculate_fairscore(self, named_linears):
+    #     """Calculate FairScore for each weight in the model."""
+    #     calib_data = get_fairness_dataset(tokenizer=self.tokenizer)
+
+    #     contexts = []
+    #     stereotypes = []
+    #     antistereotypes = []
+    #     for context, stereotype, antistereotype in calib_data:
+    #         contexts.append(context)
+    #         stereotypes.append(stereotype)
+    #         antistereotypes.append(antistereotype)
+        
+    #     device = get_best_device()
+    #     self.model.to(device)
+
+    #     accumulated_scores = {
+    #         name: torch.zeros_like(module.weight, device='cpu')
+    #         for name, module in named_linears.items()
+    #     }
+
+    #     num_data = 0
+    #     clear_memory()
+
+    #     for i in tqdm(range(0, len(contexts)), desc="Calculating Gradients"):
+    #         context = contexts[i].to(device)
+    #         target_stereotype = stereotypes[i].to(device)
+    #         target_antistereotype = antistereotypes[i].to(device)
+
+    #         num_data += 1
+    #         self.model.train()
+            
+    #         for module in named_linears.values():
+    #             module.weight.requires_grad = True
+
+    #         self.model.zero_grad()
+
+    #         outputs = self.model(context)
+    #         logits = outputs.logits
+
+    #         prediction_logits = logits[:, -1, :]
+
+    #         # -- NLL for stereotype --
+    #         target_labels_stereo = target_stereotype[:, 0]
+
+    #         nll_stereo = torch.nn.functional.cross_entropy(
+    #             prediction_logits,
+    #             target_labels_stereo,
+    #             reduction='mean'
+    #         )
+
+    #         # -- NLL for antistereotype --
+    #         target_labels_anti = target_antistereotype[:, 0]
+
+    #         nll_anti = torch.nn.functional.cross_entropy(
+    #             prediction_logits,
+    #             target_labels_anti,
+    #             reduction='mean'
+    #         )
+
+    #         # -- Fairness loss --
+    #         fairness_loss = torch.abs(nll_stereo - nll_anti)
+
+    #         if i == 0:
+    #             print(f"\nFirst batch fairness loss: {fairness_loss.item():.6f}")
+    #             print(f"Loss requires_grad: {fairness_loss.requires_grad}")
+    #             print(f"Logits requires_grad: {logits.requires_grad}")
+    #             print("NLL Stereo:", nll_stereo.item())
+    #             print("NLL Anti:", nll_anti.item())
+    #             print(f"Context length: {context.size(1)}")
+    #             print(f"Stereotype token ID: {target_labels_stereo[0].item()}")
+    #             print(f"Antistereotype token ID: {target_labels_anti[0].item()}")
+    #             print(f"Stereotype word: {self.tokenizer.decode([target_labels_stereo[0].item()])}")
+    #             print(f"Antistereotype word: {self.tokenizer.decode([target_labels_anti[0].item()])}")
+            
+    #         fairness_loss.backward()
+
+    #         for name, module in named_linears.items():
+    #             if module.weight.grad is not None:
+    #                 current_score = torch.abs(module.weight.data * module.weight.grad.data)
+    #                 accumulated_scores[name] += current_score.cpu()
+    #                 module.weight.grad = None 
+                
+    #             module.weight.requires_grad = False
+            
+    #         clear_memory()
+
+    #     print("Calculating final fairness scores...")
+    #     fair_scores = {}
+    #     if num_data == 0:
+    #         raise ValueError("No batches were processed for fairness score calculation.")
+        
+    #     for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging scores"):
+    #         fair_scores[name] = acc_score / num_data
+
+    #     self.model.eval()
+    #     clear_memory()
+    #     return fair_scores
 
     def pseudo_quantize_tensor(self, w: torch.Tensor):
         org_w_shape = w.shape
