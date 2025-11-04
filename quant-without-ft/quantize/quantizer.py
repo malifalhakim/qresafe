@@ -160,9 +160,9 @@ class AwqQuantizer:
             try:
                 with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
                     logits_f32 = prediction_logits_gen.float()
-                    loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
                     
                     with backpack(DiagGGNMC()):
+                        loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
                         loss_gen_f32.backward()
             except RuntimeError as e:
                 print(f"Error during backward pass: {e}")
@@ -232,9 +232,9 @@ class AwqQuantizer:
             try:
                 with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
                     logits_f32 = prediction_logits_safe.float()
-                    loss_safe_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_safe.view(-1))
                     
                     with backpack(DiagGGNMC()):
+                        loss_safe_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_safe.view(-1))
                         loss_safe_f32.backward()
 
             except RuntimeError as e:
@@ -337,9 +337,9 @@ class AwqQuantizer:
             try:
                 with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
                     logits_f32 = prediction_logits_gen.float()
-                    loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
                     
                     with backpack(DiagGGNMC()):
+                        loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
                         loss_gen_f32.backward()
             except RuntimeError as e:
                 print(f"Error during backward pass: {e}")
@@ -410,9 +410,9 @@ class AwqQuantizer:
             try:
                 with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
                     logits_f32 = prediction_logits_fair.float()
-                    loss_fair_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_fair.view(-1))
                     
                     with backpack(DiagGGNMC()):
+                        loss_fair_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_fair.view(-1))
                         loss_fair_f32.backward()
             except RuntimeError as e:
                 print(f"Error during backward pass: {e}")
