@@ -25,7 +25,7 @@ from utils.module import (
 )
 
 from backpack import backpack, extend
-from backpack.extensions import DiagHessian, DiagGGNExact
+from backpack.extensions import DiagHessian, DiagGGNExact, DiagGGNMC
 
 class AwqQuantizer:
     def __init__(
@@ -81,6 +81,7 @@ class AwqQuantizer:
         self.protect_safety = protect_safety
         self.protect_fairness = protect_fairness
         self.beta = 1.0
+        self.tau = 0.6
 
     def _calculate_safescore(self, named_linears):
         """
@@ -155,7 +156,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
             
             loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            with backpack(DiagHessian()):
+            with backpack(DiagGGNMC()):
                 loss_gen.backward()
 
             if i == 0:
@@ -218,7 +219,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_safe.size(1)} does not match target length {target_labels_safe.size(1)}"
             
             loss_safe = criterion(prediction_logits_safe.view(-1, prediction_logits_safe.size(-1)), target_labels_safe.view(-1))
-            with backpack(DiagHessian()):
+            with backpack(DiagGGNMC()):
                 loss_safe.backward()
 
             if i == 0:
@@ -312,7 +313,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
             
             loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            with backpack(DiagHessian()):
+            with backpack(DiagGGNMC()):
                 loss_gen.backward()
 
             if i == 0:
@@ -375,7 +376,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_fair.size(1)} does not match target length {target_labels_fair.size(1)}"
             
             loss_fair = criterion(prediction_logits_fair.view(-1, prediction_logits_fair.size(-1)), target_labels_fair.view(-1))
-            with backpack(DiagHessian()):
+            with backpack(DiagGGNMC()):
                 loss_fair.backward()
 
             if i == 0:
@@ -489,7 +490,7 @@ class AwqQuantizer:
             score_samples = all_scores_tensor.view(-1)[indices].cpu()
 
             print("Finding threshold via sampling and sorting...")
-            tau = 0.6
+            tau = self.tau
             k = int(score_samples.numel() * tau)
             threshold = torch.topk(score_samples.float(), k, largest=True, sorted=False)[0].min()
 
