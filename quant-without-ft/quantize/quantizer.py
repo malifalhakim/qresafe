@@ -24,9 +24,6 @@ from utils.module import (
     exclude_layers_to_not_quantize,
 )
 
-from backpack import backpack, extend
-from backpack.extensions import DiagHessian, DiagGGNExact, DiagGGNMC
-
 class AwqQuantizer:
     def __init__(
         self,
@@ -115,8 +112,7 @@ class AwqQuantizer:
         device = get_best_device()
         self.model.to(device)
 
-        self.model = extend(self.model)
-        criterion = extend(torch.nn.CrossEntropyLoss())
+        criterion = torch.nn.CrossEntropyLoss()
 
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
@@ -156,18 +152,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
             
             loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            
-            try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
-                    logits_f32 = prediction_logits_gen.float()
-                    
-                    with backpack(DiagGGNMC()):
-                        loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
-                        loss_gen_f32.backward()
-            except RuntimeError as e:
-                print(f"Error during backward pass: {e}")
-                clear_memory()
-                continue
+            loss_gen.backward()
 
             if i == 0:
                 print(f"\nFirst general batch loss: {loss_gen.item():.6f}")
@@ -178,8 +163,8 @@ class AwqQuantizer:
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    hessian_gen = module.weight.diag_h
-                    accumulated_scores[name] += hessian_gen.cpu()
+                    squared_gradient = module.weight.grad.detach().pow(2)
+                    accumulated_scores[name] += squared_gradient.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
@@ -229,18 +214,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_safe.size(1)} does not match target length {target_labels_safe.size(1)}"
             
             loss_safe = criterion(prediction_logits_safe.view(-1, prediction_logits_safe.size(-1)), target_labels_safe.view(-1))
-            try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
-                    logits_f32 = prediction_logits_safe.float()
-                    
-                    with backpack(DiagGGNMC()):
-                        loss_safe_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_safe.view(-1))
-                        loss_safe_f32.backward()
-
-            except RuntimeError as e:
-                print(f"Error during backward pass: {e}")
-                clear_memory()
-                continue
+            loss_safe.backward()
 
             if i == 0:
                 print(f"\nFirst safety batch loss: {loss_safe.item():.6f}")
@@ -251,8 +225,8 @@ class AwqQuantizer:
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    hessian_safe = module.weight.diag_h
-                    accumulated_scores[name] += hessian_safe.cpu()
+                    squared_gradient = module.weight.grad.detach().pow(2)
+                    accumulated_scores[name] += squared_gradient.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
@@ -294,8 +268,7 @@ class AwqQuantizer:
         device = get_best_device()
         self.model.to(device)
 
-        self.model = extend(self.model)
-        criterion = extend(torch.nn.CrossEntropyLoss())
+        criterion = torch.nn.CrossEntropyLoss()
 
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
@@ -333,18 +306,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
             
             loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            
-            try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
-                    logits_f32 = prediction_logits_gen.float()
-                    
-                    with backpack(DiagGGNMC()):
-                        loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
-                        loss_gen_f32.backward()
-            except RuntimeError as e:
-                print(f"Error during backward pass: {e}")
-                clear_memory()
-                continue
+            loss_gen.backward()
 
             if i == 0:
                 print(f"\nFirst general batch loss: {loss_gen.item():.6f}")
@@ -355,8 +317,8 @@ class AwqQuantizer:
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    hessian_gen = module.weight.diag_h
-                    accumulated_scores[name] += hessian_gen.cpu()
+                    squared_gradient = module.weight.grad.detach().pow(2)
+                    accumulated_scores[name] += squared_gradient.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
@@ -406,18 +368,7 @@ class AwqQuantizer:
                 f"Prediction length {prediction_logits_fair.size(1)} does not match target length {target_labels_fair.size(1)}"
             
             loss_fair = criterion(prediction_logits_fair.view(-1, prediction_logits_fair.size(-1)), target_labels_fair.view(-1))
-            
-            try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type='cuda'):
-                    logits_f32 = prediction_logits_fair.float()
-                    
-                    with backpack(DiagGGNMC()):
-                        loss_fair_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_fair.view(-1))
-                        loss_fair_f32.backward()
-            except RuntimeError as e:
-                print(f"Error during backward pass: {e}")
-                clear_memory()
-                continue
+            loss_fair.backward()
 
             if i == 0:
                 print(f"\nFirst fairness batch loss: {loss_fair.item():.6f}")
@@ -428,8 +379,8 @@ class AwqQuantizer:
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    hessian_fair = module.weight.diag_h
-                    accumulated_scores[name] += hessian_fair.cpu()
+                    squared_gradient = module.weight.grad.detach().pow(2)
+                    accumulated_scores[name] += squared_gradient.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
