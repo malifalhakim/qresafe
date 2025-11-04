@@ -171,9 +171,13 @@ class AwqQuantizer:
 
             clear_memory()
         
-        general_scores = {}
+        importance_scores = {}
         for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
-            general_scores[name] = acc_score / num_data
+            importance_scores[name] = acc_score / num_data
+        
+        self.model.eval()
+        clear_memory()
+        del accumulated_scores
 
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
@@ -233,15 +237,12 @@ class AwqQuantizer:
 
             clear_memory()
 
-        safety_scores = {}
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging safety scores"):
-            safety_scores[name] = acc_score / num_data
-
         print("Calculating final importance scores...")
-        importance_scores = {}
-        for name in general_scores.keys():
-            importance_scores[name] = general_scores[name] - self.beta * safety_scores[name]
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
+            importance_scores[name].sub_(self.beta * (acc_score / num_data))
 
+        
+        del accumulated_scores
         self.model.eval()
         clear_memory()
         return importance_scores
@@ -325,9 +326,13 @@ class AwqQuantizer:
 
             clear_memory()
 
-        general_scores = {}
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
-            general_scores[name] = acc_score / num_data
+        importance_scores = {}
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
+            importance_scores[name] = acc_score / num_data
+
+        self.model.eval()
+        clear_memory()
+        del accumulated_scores
 
         accumulated_scores = {
             name: torch.zeros_like(module.weight, device='cpu')
@@ -387,15 +392,11 @@ class AwqQuantizer:
 
             clear_memory()
 
-        fairness_scores = {}
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging fairness scores"):
-            fairness_scores[name] = acc_score / num_data
-
         print("Calculating final importance scores...")
-        importance_scores = {}
-        for name in general_scores.keys():
-            importance_scores[name] = general_scores[name] - self.beta * fairness_scores[name]
+        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
+            importance_scores[name].sub_(self.beta * (acc_score / num_data))
 
+        del accumulated_scores
         self.model.eval()
         clear_memory()
         return importance_scores
