@@ -158,7 +158,7 @@ class AwqQuantizer:
             loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
             
             try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32):
+                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type=device.type):
                     logits_f32 = prediction_logits_gen.float()
                     loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
                     
@@ -230,7 +230,7 @@ class AwqQuantizer:
             
             loss_safe = criterion(prediction_logits_safe.view(-1, prediction_logits_safe.size(-1)), target_labels_safe.view(-1))
             try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32):
+                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type=device.type):
                     logits_f32 = prediction_logits_safe.float()
                     loss_safe_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_safe.view(-1))
                     
@@ -335,7 +335,7 @@ class AwqQuantizer:
             loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
             
             try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32):
+                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type=device.type):
                     logits_f32 = prediction_logits_gen.float()
                     loss_gen_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_gen.view(-1))
                     
@@ -408,7 +408,7 @@ class AwqQuantizer:
             loss_fair = criterion(prediction_logits_fair.view(-1, prediction_logits_fair.size(-1)), target_labels_fair.view(-1))
             
             try:
-                with torch.amp.autocast(enabled=True, dtype=torch.float32):
+                with torch.amp.autocast(enabled=True, dtype=torch.float32, device_type=device.type):
                     logits_f32 = prediction_logits_fair.float()
                     loss_fair_f32 = criterion(logits_f32.view(-1, logits_f32.size(-1)), target_labels_fair.view(-1))
                     
