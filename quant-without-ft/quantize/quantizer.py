@@ -159,7 +159,7 @@ class AwqQuantizer:
                 print(f"Loss requires_grad: {loss_gen.requires_grad}")
                 print(f"Logits requires_grad: {logits_gen.requires_grad}")
                 print(f"Target Token IDs: {target_labels_gen[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist()]}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist() if tid != -100]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
@@ -221,7 +221,7 @@ class AwqQuantizer:
                 print(f"Loss requires_grad: {loss_safe.requires_grad}")
                 print(f"Logits requires_grad: {logits_safe.requires_grad}")
                 print(f"Target Token IDs: {target_labels_safe[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_safe[0].tolist()]}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_safe[0].tolist() if tid != -100]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
@@ -313,7 +313,7 @@ class AwqQuantizer:
                 print(f"Loss requires_grad: {loss_gen.requires_grad}")
                 print(f"Logits requires_grad: {logits_gen.requires_grad}")
                 print(f"Target Token IDs: {target_labels_gen[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist()]}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist() if tid != -100]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
@@ -375,7 +375,7 @@ class AwqQuantizer:
                 print(f"Loss requires_grad: {loss_fair.requires_grad}")
                 print(f"Logits requires_grad: {logits_fair.requires_grad}")
                 print(f"Target Token IDs: {target_labels_fair[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_fair[0].tolist()]}")
+                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_fair[0].tolist() if tid != -100]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
