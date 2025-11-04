@@ -203,6 +203,10 @@ def get_general_dataset(
         dataset = load_dataset(dataset_name, subset, split=split)
     else:
         dataset = load_dataset(dataset_name, split=split)
+    
+    if "dolly" in dataset_name.lower():
+        print("Filtering Dolly dataset for 'general_qa' category...")
+        dataset = dataset.filter(lambda x: x['category'] == 'general_qa')
 
     dataset = dataset.shuffle(seed=42)
     if n_samples is not None:
