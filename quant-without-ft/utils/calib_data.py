@@ -243,7 +243,7 @@ def get_general_dataset(
             general_data.append((input_ids, label_ids))
         else:
             text = data[text_column]
-            input_ids = tokenizer(text, return_tensors="pt").input_ids
+            input_ids = tokenizer(text, return_tensors="pt", max_length=512, truncation=True).input_ids
             general_data.append((input_ids, None))
 
     return general_data
