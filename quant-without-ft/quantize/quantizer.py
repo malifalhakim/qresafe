@@ -239,9 +239,9 @@ class AwqQuantizer:
 
         print("Calculating final importance scores...")
         for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
-            importance_scores[name].sub_(self.beta * (acc_score / num_data))
+            safe_score = acc_score / num_data
+            importance_scores[name] = safe_score - self.beta * importance_scores[name]
 
-        
         del accumulated_scores
         self.model.eval()
         clear_memory()
@@ -260,11 +260,15 @@ class AwqQuantizer:
         for input_ids, _ in general_data:
             input_general.append(input_ids)
 
-        input_fairness = []
-        target_fairness = []
-        for input_ids_stereotype, label_ids_stereotype, _, _ in fairness_data:
-            input_fairness.append(input_ids_stereotype)
-            target_fairness.append(label_ids_stereotype)
+        input_stereotypes = []
+        target_stereotypes = []
+        input_antistereotypes = []
+        target_antistereotypes = []
+        for input_ids_stereotype, label_ids_stereotype, input_ids_antistereotype, label_ids_antistereotype in fairness_data:
+            input_stereotypes.append(input_ids_stereotype)
+            target_stereotypes.append(label_ids_stereotype)
+            input_antistereotypes.append(input_ids_antistereotype)
+            target_antistereotypes.append(label_ids_antistereotype)
 
         device = get_best_device()
         self.model.to(device)
@@ -342,9 +346,11 @@ class AwqQuantizer:
         num_data = 0
         clear_memory()
 
-        for i in tqdm(range(0, len(input_fairness)), desc="Calculating Hessians"):
-            input_stereotype = input_fairness[i].to(device)
-            target_stereotype = target_fairness[i].to(device)
+        for i in tqdm(range(0, len(input_stereotypes)), desc="Calculating Hessians"):
+            input_stereotype = input_stereotypes[i].to(device)
+            target_stereotype = target_stereotypes[i].to(device)
+            input_antistereotype = input_antistereotypes[i].to(device)
+            target_antistereotype = target_antistereotypes[i].to(device)
 
             num_data += 1
             self.model.train()
@@ -354,33 +360,36 @@ class AwqQuantizer:
 
             self.model.zero_grad()
 
-            outputs_fair = self.model(input_stereotype)
-            logits_fair = outputs_fair.logits
+            outputs_stereo = self.model(input_stereotype)
+            logits_stereo = outputs_stereo.logits
 
-            prediction_logits_fair = logits_fair[:, :-1, :]
-            target_labels_fair = target_stereotype[:, 1:]
+            prediction_logits_stereo = logits_stereo[:, :-1, :]
+            target_labels_stereo = target_stereotype[:, 1:]
+            nll_stereo = criterion(prediction_logits_stereo.view(-1, prediction_logits_stereo.size(-1)), target_labels_stereo.view(-1))
+
+            outputs_antistereo = self.model(input_antistereotype)
+            logits_antistereo = outputs_antistereo.logits
+
+            prediction_logits_antistereo = logits_antistereo[:, :-1, :]
+            target_labels_antistereo = target_antistereotype[:, 1:]
+            nll_antistereo = criterion(prediction_logits_antistereo.view(-1, prediction_logits_antistereo.size(-1)), target_labels_antistereo.view(-1))
 
             if i == 0:
-                print(f"Input Fair Token IDs: {input_stereotype}")
-                print(f"Target Fair Token IDs: {target_stereotype}")
-                print(f"Prediction Logits Shape: {prediction_logits_fair.shape}")
-                print(f"Target Labels Shape: {target_labels_fair.shape}")
-                print(f"Input Fair Shape: {input_stereotype.shape}")
-                print(f"Logits Shape: {logits_fair.shape}")
-                print(f"Target Fair Shape: {target_stereotype.shape}")
+                print(f"Input Fair Token IDs: {input_stereotype} \n| {input_antistereotype}")
+                print(f"Target Fair Token IDs: {target_stereotype} \n| {target_antistereotype}")
+                print(f"Output stereo Shape: {logits_stereo.shape} \n| Output anti-stereo Shape: {logits_antistereo.shape}")
+                print(f"Prediction Logits stereo Shape: {prediction_logits_stereo.shape} \n| Prediction Logits anti-stereo Shape: {prediction_logits_antistereo.shape}")
 
-            assert prediction_logits_fair.size(1) == target_labels_fair.size(1), \
-                f"Prediction length {prediction_logits_fair.size(1)} does not match target length {target_labels_fair.size(1)}"
-            
-            loss_fair = criterion(prediction_logits_fair.view(-1, prediction_logits_fair.size(-1)), target_labels_fair.view(-1))
+            loss_fair = torch.abs(nll_stereo - nll_antistereo)
             loss_fair.backward()
 
             if i == 0:
                 print(f"\nFirst fairness batch loss: {loss_fair.item():.6f}")
                 print(f"Loss requires_grad: {loss_fair.requires_grad}")
-                print(f"Logits requires_grad: {logits_fair.requires_grad}")
-                print(f"Target Token IDs: {target_labels_fair[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_fair[0].tolist() if tid != -100]}")
+                print(f"Target Token IDs Stereo: {target_labels_stereo[0].tolist()}")
+                print(f"Target Words Stereo: {[self.tokenizer.decode([tid]) for tid in target_labels_stereo[0].tolist() if tid != -100]}")
+                print(f"Target Token IDs Anti-Stereo: {target_labels_antistereo[0].tolist()}")
+                print(f"Target Words Anti-Stereo: {[self.tokenizer.decode([tid]) for tid in target_labels_antistereo[0].tolist() if tid != -100]}")
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
@@ -394,7 +403,8 @@ class AwqQuantizer:
 
         print("Calculating final importance scores...")
         for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
-            importance_scores[name].sub_(self.beta * (acc_score / num_data))
+            fair_score = acc_score / num_data
+            importance_scores[name] = fair_score - self.beta * importance_scores[name]
 
         del accumulated_scores
         self.model.eval()

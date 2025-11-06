@@ -89,12 +89,12 @@ def _extract_blank_fill(context_template, filled_option):
     temp_fill = filled_option_lower.removeprefix(prefix_lower)
     fill_word = temp_fill.removesuffix(suffix_lower)
 
-    return prefix, fill_word
+    return prefix.strip(), fill_word.strip()
 
 def get_fairness_dataset(
-    dataset_name: str = "McGill-NLP/stereoset",
-    subset: str = "intersentence",
-    split: str = "validation",
+    dataset_name: str = "Amadeus99/filtered_stereoset",
+    subset: str = "sample",
+    split: str = "train",
     tokenizer=None,
     n_samples: int = 128
 ):  
