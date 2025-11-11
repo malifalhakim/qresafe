@@ -47,6 +47,8 @@ class AwqQuantizer:
         max_chunk_memory=1024 * 1024 * 1024,
         protect_safety=False,
         protect_fairness=False,
+        beta=1.0,
+        tau=0.6,
     ) -> None:
         self.awq_model = awq_model
         self.model = model
@@ -77,8 +79,8 @@ class AwqQuantizer:
         
         self.protect_safety = protect_safety
         self.protect_fairness = protect_fairness
-        self.beta = 1.0
-        self.tau = 0.6
+        self.beta = beta
+        self.tau = tau
 
     def _calculate_safescore(self, named_linears):
         """

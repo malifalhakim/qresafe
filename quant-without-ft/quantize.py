@@ -28,6 +28,18 @@ def parse_args():
         action="store_true",
         help="Enable fairness protection during quantization.",
     )
+    parser.add_argument(
+        "--beta",
+        type=float,
+        default=1.0,
+        help="Hyperparameter for calculating importance score."
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=0.6,
+        help="Threshold for selecting important weights."
+    )
     args = parser.parse_args()
     return args
 
@@ -42,6 +54,8 @@ def main():
         "version": "GEMM",
         "protect_safety": args.protect_safety,
         "protect_fairness": args.protect_fairness,
+        "beta": args.beta,
+        "tau": args.tau,
     }
 
 

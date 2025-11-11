@@ -16,6 +16,8 @@ class AwqConfig(PushToHubMixin):
     modules_to_not_convert: Optional[List] = None
     protect_safety: bool = field(default=False)
     protect_fairness: bool = field(default=False)
+    beta: float = field(default=1.0)
+    tau: float = field(default=0.6)
 
     @classmethod
     def from_dict(cls, quant_config: Dict = {}):
@@ -83,6 +85,8 @@ class AwqConfig(PushToHubMixin):
             "modules_to_not_convert": self.modules_to_not_convert,
             "protect_safety": self.protect_safety,
             "protect_fairness": self.protect_fairness,
+            "beta": self.beta,
+            "tau": self.tau,
         }
 
     def to_transformers_dict(self):
@@ -95,6 +99,8 @@ class AwqConfig(PushToHubMixin):
             "modules_to_not_convert": self.modules_to_not_convert,
             "protect_safety": self.protect_safety,
             "protect_fairness": self.protect_fairness,
+            "beta": self.beta,
+            "tau": self.tau,
         }
 
     def from_transformers_dict(self, transformers_dict: Dict):
@@ -107,4 +113,6 @@ class AwqConfig(PushToHubMixin):
             "modules_to_not_convert": transformers_dict.get("modules_to_not_convert"),
             "protect_safety": transformers_dict.get("protect_safety", False),
             "protect_fairness": transformers_dict.get("protect_fairness", False),
+            "beta": transformers_dict.get("beta", 1.0),
+            "tau": transformers_dict.get("tau", 0.6),
         }

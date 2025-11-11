@@ -236,6 +236,8 @@ class BaseAWQForCausalLM(nn.Module):
             max_chunk_memory=max_chunk_memory,
             protect_safety=self.quant_config.protect_safety,
             protect_fairness=self.quant_config.protect_fairness,
+            beta=self.quant_config.beta,
+            tau=self.quant_config.tau,
             **kwargs,
         )
         self.quantizer.quantize()
