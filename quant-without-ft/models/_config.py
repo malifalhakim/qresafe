@@ -18,6 +18,7 @@ class AwqConfig(PushToHubMixin):
     protect_fairness: bool = field(default=False)
     beta: float = field(default=1.0)
     tau: float = field(default=0.6)
+    model_name: str = field(default="none")
 
     @classmethod
     def from_dict(cls, quant_config: Dict = {}):
@@ -87,6 +88,7 @@ class AwqConfig(PushToHubMixin):
             "protect_fairness": self.protect_fairness,
             "beta": self.beta,
             "tau": self.tau,
+            "model_name": self.model_name,
         }
 
     def to_transformers_dict(self):
@@ -101,6 +103,7 @@ class AwqConfig(PushToHubMixin):
             "protect_fairness": self.protect_fairness,
             "beta": self.beta,
             "tau": self.tau,
+            "model_name": self.model_name,
         }
 
     def from_transformers_dict(self, transformers_dict: Dict):
@@ -115,4 +118,5 @@ class AwqConfig(PushToHubMixin):
             "protect_fairness": transformers_dict.get("protect_fairness", False),
             "beta": transformers_dict.get("beta", 1.0),
             "tau": transformers_dict.get("tau", 0.6),
+            "model_name": transformers_dict.get("model_name", "none"),
         }

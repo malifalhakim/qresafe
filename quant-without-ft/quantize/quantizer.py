@@ -1,3 +1,4 @@
+import os
 import torch
 import inspect
 import logging
@@ -7,6 +8,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from typing import Dict, List, Optional
 from collections import defaultdict
+from datetime import datetime
 from utils.calib_data import get_calib_dataset, get_fairness_dataset, get_safety_dataset, get_general_dataset
 from quantize.scale import apply_scale, apply_clip
 from utils.utils import clear_memory, get_best_device
@@ -49,6 +51,7 @@ class AwqQuantizer:
         protect_fairness=False,
         beta=1.0,
         tau=0.6,
+        model_name="none"
     ) -> None:
         self.awq_model = awq_model
         self.model = model
@@ -81,6 +84,8 @@ class AwqQuantizer:
         self.protect_fairness = protect_fairness
         self.beta = beta
         self.tau = tau
+        self.saved_scores_dir = "./saved_scores"
+        self.model_name = model_name
 
     def _calculate_safescore(self, named_linears):
         """
@@ -477,10 +482,18 @@ class AwqQuantizer:
 
         if self.protect_safety:
             print(f"Calculating safety-critical weights...")
-            all_scores = self._calculate_safescore(all_named_linears)
+            if os.path.exists(os.path.join(self.saved_scores_dir, f"{self.model_name}_safety_scores.pt")):
+                all_scores = self._load_scores(f"{self.model_name}_safety_scores.pt")
+            else:
+                all_scores = self._calculate_safescore(all_named_linears)
+                self._save_scores(all_scores, f"{self.model_name}_safety_scores.pt")
         elif self.protect_fairness:
             print(f"Calculating fairness-critical weights...")
-            all_scores = self._calculate_fairscore(all_named_linears)
+            if os.path.exists(os.path.join(self.saved_scores_dir, f"{self.model_name}_fairness_scores.pt")):
+                all_scores = self._load_scores(f"{self.model_name}_fairness_scores.pt")
+            else:
+                all_scores = self._calculate_fairscore(all_named_linears)
+                self._save_scores(all_scores, f"{self.model_name}_fairness_scores.pt")
         else:
             all_scores = {}
 
@@ -1226,3 +1239,32 @@ class AwqQuantizer:
             print(f"Error during score analysis: {e}")
 
         return torch.cat([score_tensor.view(-1) for score_tensor in scores.values()])
+
+    def _save_scores(self, scores: Dict[str, torch.Tensor], filename: str):
+        """
+        Save critical scores to a file for later analysis or fasten future runs.
+        """
+        os.makedirs(self.saved_scores_dir, exist_ok=True)
+        save_dict = {
+            'scores': {k: v.cpu() for k, v in scores.items()},
+            'metadata': {
+                'timestamp': datetime.now().isoformat(),
+                'beta': self.beta,
+            }
+        }
+
+        torch.save(save_dict, os.path.join(self.saved_scores_dir, filename))
+        print(f"Importance scores saved to {filename}")
+    
+    def _load_scores(self, filename: str) -> Dict[str, torch.Tensor]:
+        """
+        Load importance scores from a file if available.
+        """
+        filepath = os.path.join(self.saved_scores_dir, filename)
+        if os.path.exists(filepath):
+            loaded = torch.load(filepath)
+            print(f"Loaded importance scores from {filename}")
+            return loaded['scores']
+        else:
+            print(f"No saved scores found at {filename}")
+            return {}

@@ -56,6 +56,7 @@ def main():
         "protect_fairness": args.protect_fairness,
         "beta": args.beta,
         "tau": args.tau,
+        "model_name": os.path.basename(model_path.rstrip('/')),
     }
 
 
