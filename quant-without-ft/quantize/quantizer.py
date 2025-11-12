@@ -479,8 +479,27 @@ class AwqQuantizer:
             for name, layer in named_linears.items():
                 full_name = module_prefix + name
                 all_named_linears[full_name] = layer
+        
+        if self.protect_safety and self.protect_fairness:
+            print(f"Calculating combined safety and fairness critical weights...")
+            print("Calculating safety scores...")
+            if os.path.exists(os.path.join(self.saved_scores_dir, f"{self.model_name}_safety_scores.pt")):
+                safety_scores = self._load_scores(f"{self.model_name}_safety_scores.pt")
+            else:
+                safety_scores = self._calculate_safescore(all_named_linears)
+                self._save_scores(safety_scores, f"{self.model_name}_safety_scores.pt")
+            
+            print("Calculating fairness scores...")
+            if os.path.exists(os.path.join(self.saved_scores_dir, f"{self.model_name}_fairness_scores.pt")):
+                fairness_scores = self._load_scores(f"{self.model_name}_fairness_scores.pt")
+            else:
+                fairness_scores = self._calculate_fairscore(all_named_linears)
+                self._save_scores(fairness_scores, f"{self.model_name}_fairness_scores.pt")
 
-        if self.protect_safety:
+            normalized_safety_scores = self._normalize_scores(safety_scores)
+            normalized_fairness_scores = self._normalize_scores(fairness_scores)
+            all_scores = self._combine_scores(normalized_safety_scores, normalized_fairness_scores)
+        elif self.protect_safety:
             print(f"Calculating safety-critical weights...")
             if os.path.exists(os.path.join(self.saved_scores_dir, f"{self.model_name}_safety_scores.pt")):
                 all_scores = self._load_scores(f"{self.model_name}_safety_scores.pt")
@@ -1268,3 +1287,33 @@ class AwqQuantizer:
         else:
             print(f"No saved scores found at {filename}")
             return {}
+    
+    def _normalize_scores(self, scores: Dict[str, torch.Tensor]) -> Dict[str,torch.Tensor]:
+        """
+        Normalize scores to [0, 1] range using min-max normalization.
+        """
+        min_value = float('inf')
+        max_value = float('-inf')
+        for weight_name, score_tensor in scores.items():
+            min_value = min(min_value, score_tensor.min().item())
+            max_value = max(max_value, score_tensor.max().item())
+
+        for weight_name, score_tensor in scores.items():
+            scores[weight_name] = (score_tensor - min_value) / (max_value - min_value + 1e-8)
+
+        return scores
+    
+    def _combine_scores(self, scores_fair: Dict[str, torch.Tensor], scores_safe: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """
+        Geometric mean the importance scores from Fairness and Safety perspectives.
+        """
+        averaged_scores = {}
+        for weight_name in scores_fair:
+            if weight_name in scores_safe:
+                score_fair = scores_fair[weight_name]
+                score_safe = scores_safe[weight_name]
+                averaged_scores[weight_name] = torch.sqrt(score_fair * score_safe)
+            else:
+                print("WARNING: Weight", weight_name, "not found in safety scores. Using fairness scores only.")
+                averaged_scores[weight_name] = scores_fair[weight_name]
+        return averaged_scores
