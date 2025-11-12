@@ -76,9 +76,6 @@ class AwqQuantizer:
         self.modules, self.module_kwargs, self.inps = self.init_quant(
             n_samples=self.max_calib_samples, max_seq_len=self.max_calib_seq_len
         )
-
-        if protect_safety and protect_fairness:
-            raise ValueError("Cannot protect both safety and fairness at the same time for now.")
         
         self.protect_safety = protect_safety
         self.protect_fairness = protect_fairness
