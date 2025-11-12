@@ -1,13 +1,14 @@
 #!/bin/bash
 
 # Quantization Pipeline Script
-# This script quantizes a model in three variants: baseline, safety-protected, and fairness-protected
-# Usage: ./pipeline.sh --model_path <path> [--skip_baseline] [--skip_safety] [--skip_fairness] [--no_upload] [--no_cleanup]
+# This script quantizes a model in four variants: baseline, safety-protected, fairness-protected, and trust-protected
+# Usage: ./pipeline.sh --model_path <path> [--skip_baseline] [--skip_safety] [--skip_fairness] [--skip_trust] [--no_upload] [--no_cleanup]
 
 # Default values
 SKIP_BASELINE=true
 SKIP_SAFETY=false
 SKIP_FAIRNESS=false
+SKIP_TRUST=true
 NO_UPLOAD=false
 NO_CLEANUP=false
 MODEL_PATH=""
@@ -73,6 +74,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_FAIRNESS=true
             shift
             ;;
+        --skip_trust)
+            SKIP_TRUST=true
+            shift
+            ;;
         --no_upload)
             NO_UPLOAD=true
             shift
@@ -95,9 +100,10 @@ while [[ $# -gt 0 ]]; do
             echo "  --skip_baseline          Skip baseline quantization"
             echo "  --skip_safety            Skip safety-protected quantization"
             echo "  --skip_fairness          Skip fairness-protected quantization"
+            echo "  --skip_trust             Skip trust-protected (fairness + safety) quantization"
             echo "  --no_upload              Skip uploading to HuggingFace"
             echo "  --no_cleanup             Keep quantized models locally (don't delete)"
-            echo "  --hf_username <name>     HuggingFace username (default: Amadeus)"
+            echo "  --hf_username <name>     HuggingFace username (default: Amadeus99)"
             echo "  --help, -h               Show this help message"
             echo ""
             echo "Examples:"
@@ -268,6 +274,7 @@ main() {
     print_info "Skip Baseline: $SKIP_BASELINE"
     print_info "Skip Safety: $SKIP_SAFETY"
     print_info "Skip Fairness: $SKIP_FAIRNESS"
+    print_info "Skip Trust: $SKIP_TRUST"
     print_info "Upload to HF: $([ "$NO_UPLOAD" = false ] && echo "Yes" || echo "No")"
     print_info "Cleanup: $([ "$NO_CLEANUP" = false ] && echo "Yes" || echo "No")"
     
@@ -299,6 +306,12 @@ main() {
         "${MODEL_NAME}-AWQ-fairness" \
         "--protect_fairness"
     
+    process_variant \
+        "Trust Protected (Safety + Fairness)" \
+        "$SKIP_TRUST" \
+        "${MODEL_NAME}-AWQ-trust" \
+        "--protect_safety --protect_fairness"
+    
     # End time and duration
     END_TIME=$(date +%s)
     DURATION=$((END_TIME - START_TIME))
@@ -315,12 +328,14 @@ main() {
     [ "$SKIP_BASELINE" = false ] && echo "  ✓ Baseline quantization"
     [ "$SKIP_SAFETY" = false ] && echo "  ✓ Safety-protected quantization"
     [ "$SKIP_FAIRNESS" = false ] && echo "  ✓ Fairness-protected quantization"
+    [ "$SKIP_TRUST" = false ] && echo "  ✓ Trust-protected (Safety + Fairness) quantization"
     
     if [ "$NO_UPLOAD" = false ]; then
         echo -e "\n${GREEN}HuggingFace Repositories:${NC}"
         [ "$SKIP_BASELINE" = false ] && echo "  → https://huggingface.co/${HF_USERNAME}/${MODEL_NAME}-awq-4bit"
         [ "$SKIP_SAFETY" = false ] && echo "  → https://huggingface.co/${HF_USERNAME}/${MODEL_NAME}-awq-4bit-safety"
         [ "$SKIP_FAIRNESS" = false ] && echo "  → https://huggingface.co/${HF_USERNAME}/${MODEL_NAME}-awq-4bit-fairness"
+        [ "$SKIP_TRUST" = false ] && echo "  → https://huggingface.co/${HF_USERNAME}/${MODEL_NAME}-awq-4bit-trust"
     fi
 }
 
