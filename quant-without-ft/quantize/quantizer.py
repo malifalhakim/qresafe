@@ -1260,17 +1260,19 @@ class AwqQuantizer:
         """
         Save critical scores to a file for later analysis or fasten future runs.
         """
-        os.makedirs(self.saved_scores_dir, exist_ok=True)
-        save_dict = {
-            'scores': {k: v.cpu() for k, v in scores.items()},
-            'metadata': {
-                'timestamp': datetime.now().isoformat(),
-                'beta': self.beta,
-            }
-        }
+        # UNAVAILABLE CURRENTLY
+        # os.makedirs(self.saved_scores_dir, exist_ok=True)
+        # save_dict = {
+        #     'scores': {k: v.cpu() for k, v in scores.items()},
+        #     'metadata': {
+        #         'timestamp': datetime.now().isoformat(),
+        #         'beta': self.beta,
+        #     }
+        # }
 
-        torch.save(save_dict, os.path.join(self.saved_scores_dir, filename))
-        print(f"Importance scores saved to {filename}")
+        # torch.save(save_dict, os.path.join(self.saved_scores_dir, filename))
+        # print(f"Importance scores saved to {filename}")
+        print("Saving scores is currently unavailable.")
     
     def _load_scores(self, filename: str) -> Dict[str, torch.Tensor]:
         """

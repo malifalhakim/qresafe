@@ -265,6 +265,17 @@ process_variant() {
     print_success "Completed processing: $variant"
 }
 
+clear_hf_cache() {
+    print_header "CLEARING HUGGING FACE CACHE"
+    
+    if [ ! -d "${HF_HOME}" ]; then
+        echo "📁 Cache directory ${HF_HOME} does not exist, creating it..."
+        mkdir -p "${HF_HOME}"
+        echo "✅ Cache directory created."
+        return 0
+    fi
+}
+
 # Main execution
 main() {
     print_header "Quantization Pipeline Started"
@@ -291,7 +302,7 @@ main() {
     process_variant \
         "Baseline (No Protection)" \
         "$SKIP_BASELINE" \
-        "${MODEL_NAME}-AWQ" \
+        "${MODEL_NAME}-AWQ-q-resafe" \
         ""
     
     process_variant \
@@ -337,6 +348,8 @@ main() {
         [ "$SKIP_FAIRNESS" = false ] && echo "  → https://huggingface.co/${HF_USERNAME}/${MODEL_NAME}-awq-4bit-fairness"
         [ "$SKIP_TRUST" = false ] && echo "  → https://huggingface.co/${HF_USERNAME}/${MODEL_NAME}-awq-4bit-trust"
     fi
+
+    clear_hf_cache
 }
 
 # Run main function
