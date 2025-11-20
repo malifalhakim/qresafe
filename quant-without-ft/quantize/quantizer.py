@@ -1031,9 +1031,9 @@ class AwqQuantizer:
             
             def __getattr__(self, name):
                 try:
-                    return getattr(self.module, name)
+                    return super().__getattr__(name)
                 except AttributeError:
-                    raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+                    return getattr(self.module, name)
 
             def forward(self, *args, **kwargs):
                 # assume first input to forward is hidden states
