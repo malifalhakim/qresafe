@@ -267,12 +267,13 @@ process_variant() {
 
 clear_hf_cache() {
     print_header "CLEARING HUGGING FACE CACHE"
-    
-    if [ ! -d "${HF_HOME}" ]; then
-        echo "📁 Cache directory ${HF_HOME} does not exist, creating it..."
-        mkdir -p "${HF_HOME}"
-        echo "✅ Cache directory created."
-        return 0
+    MODEL_CACHE_PATH="${HF_HOME}/hub"
+
+    if [ -d "$MODEL_CACHE_PATH" ]; then
+        rm -rf "${MODEL_CACHE_PATH:?}/"*
+        print_success "Cleared HuggingFace cache at: $MODEL_CACHE_PATH"
+    else
+        print_warning "HuggingFace cache directory not found: $MODEL_CACHE_PATH"
     fi
 }
 
