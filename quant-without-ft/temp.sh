@@ -1,3 +1,7 @@
+#!/bin/bash
+
+source quant/bin/activate
+
 # --- QWEN QUANTIZATION ---
 ./pipeline.sh --model_path "Qwen/Qwen2.5-7B-Instruct" 
 
@@ -6,3 +10,5 @@
 
 # --- LLAMA QUANTIZATION Q-TRUST ---
 ./pipeline.sh --model_path "meta-llama/Llama-3.1-8B-Instruct" --skip_baseline --skip_safety --skip_fairness
+
+deactivate
