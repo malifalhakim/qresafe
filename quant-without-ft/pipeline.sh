@@ -5,10 +5,10 @@
 # Usage: ./pipeline.sh --model_path <path> [--skip_baseline] [--skip_safety] [--skip_fairness] [--skip_trust] [--no_upload] [--no_cleanup]
 
 # Default values
-SKIP_BASELINE=true
+SKIP_BASELINE=false
 SKIP_SAFETY=false
 SKIP_FAIRNESS=false
-SKIP_TRUST=true
+SKIP_TRUST=false
 NO_UPLOAD=false
 NO_CLEANUP=false
 MODEL_PATH=""
