@@ -613,8 +613,9 @@ class AwqQuantizer:
             clear_memory()
     
         # Clean up scores after quantization is complete
-        del self.critical_scores
-        self.critical_scores = None
+        if hasattr(self, 'critical_scores') and self.critical_scores is not None:
+            del self.critical_scores
+            self.critical_scores = None
         clear_memory()
 
     def pack(self):
