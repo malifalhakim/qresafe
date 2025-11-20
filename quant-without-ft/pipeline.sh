@@ -268,12 +268,20 @@ process_variant() {
 clear_hf_cache() {
     print_header "CLEARING HUGGING FACE CACHE"
     MODEL_CACHE_PATH="${HF_HOME}/hub"
+    DATASET_CACHE_PATH="${HF_HOME}/datasets"
 
     if [ -d "$MODEL_CACHE_PATH" ]; then
         rm -rf "${MODEL_CACHE_PATH:?}/"*
         print_success "Cleared HuggingFace cache at: $MODEL_CACHE_PATH"
     else
         print_warning "HuggingFace cache directory not found: $MODEL_CACHE_PATH"
+    fi
+
+    if [ -d "$DATASET_CACHE_PATH" ]; then
+        rm -rf "${DATASET_CACHE_PATH:?}/"*
+        print_success "Cleared HuggingFace dataset cache at: $DATASET_CACHE_PATH"
+    else
+        print_warning "HuggingFace dataset cache directory not found: $DATASET_CACHE_PATH"
     fi
 }
 
