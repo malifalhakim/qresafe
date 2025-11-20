@@ -238,7 +238,7 @@ class BaseAWQForCausalLM(nn.Module):
             protect_fairness=self.quant_config.protect_fairness,
             beta=self.quant_config.beta,
             tau=self.quant_config.tau,
-            model_name=self.quant_config.model_name
+            model_name=self.quant_config.model_name,
             **kwargs,
         )
         self.quantizer.quantize()
