@@ -19,4 +19,7 @@ send_notification "Gemma 7B Q-Trust Quantization Completed"
 ./pipeline.sh --model_path "meta-llama/Llama-3.1-8B-Instruct" --skip_baseline --skip_safety --skip_fairness
 send_notification "Llama 3.1 8B Q-Trust Quantization Completed"
 
+# --- DELETE /huggingface CACHE FOLDER ---
+rm -rf /huggingface/*
+
 deactivate
