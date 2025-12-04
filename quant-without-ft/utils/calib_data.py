@@ -190,7 +190,7 @@ def get_safety_dataset(
     return safety_data
 
 def get_general_dataset(
-    dataset_name: str = "wikimedia/wikipedia",
+    dataset_name: str = "Amadeus99/wikipedia-subset-1k",
     subset: str = "20231101.en",
     split: str = "train",
     n_samples: int = 128,
