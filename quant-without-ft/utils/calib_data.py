@@ -91,12 +91,12 @@ def _extract_blank_fill(context_template, filled_option):
 
     return prefix.strip(), fill_word.strip()
 
-def get_fairness_dataset(
+def get_stereoset_dataset(
     dataset_name: str = "Amadeus99/filtered_stereoset",
     subset: str = "sample",
     split: str = "train",
     tokenizer=None,
-    n_samples: int = 128
+    n_samples: int = 64
 ):  
     if n_samples <= 128 and dataset_name == "Amadeus99/filtered_stereoset":
         subset = "sample"
@@ -143,6 +143,108 @@ def get_fairness_dataset(
         fairness_data.append((full_stereotype_tokens, stereotype_label, full_anti_stereotype_tokens, anti_stereotype_label))
 
     return fairness_data
+
+def get_jigsaw_dataset(
+    dataset_name: str = "Amadeus99/jigsaw-parallel",
+    split: str = "train",
+    tokenizer=None,
+    n_samples: int = 64,
+    use_template: bool = True,
+):
+    dataset = load_dataset(dataset_name, split=split)
+    dataset = dataset.shuffle(seed=42)
+    if n_samples is not None:
+        dataset = dataset.select(range(n_samples))
+
+    jigsaw_data = []
+    for data in dataset:
+        comment = data['comment_text']
+        parallel_comment = data['parallel_comment_text']
+        label = data['toxicity']
+        label = "Yes" if label == 1 else "No"
+
+        PROMPT = "Is the following statement toxic? Respond with either No or Yes. Statement: {comment_text}"
+
+        if use_template:
+            # --- PREPARE ORIGINAL COMMENT ---
+            message_comment = [
+                {"role": "user", "content": PROMPT.format(comment_text=comment)},
+                {"role": "assistant", "content": label}
+            ]
+
+            input_comment_ids = tokenizer.apply_chat_template(
+                message_comment,
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors="pt"
+            )
+
+            prompt_message_comment = message_comment[:-1]
+            prompt_comment_ids = tokenizer.apply_chat_template(
+                prompt_message_comment,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt"
+            )
+            prompt_length_comment = prompt_comment_ids.shape[1]
+            label_comment = input_comment_ids.clone()
+            label_comment[:, :prompt_length_comment] = -100
+            target_tokenized_comment = label_comment
+
+            # --- PREPARE PARALLEL COMMENT ---
+            message_parallel = [
+                {"role": "user", "content": PROMPT.format(comment_text=parallel_comment)},
+                {"role": "assistant", "content": label}
+            ]
+
+            input_parallel_ids = tokenizer.apply_chat_template(
+                message_parallel,
+                tokenize=True,
+                add_generation_prompt=False,
+                return_tensors="pt"
+            )
+
+            prompt_message_parallel = message_parallel[:-1]
+            prompt_parallel_ids = tokenizer.apply_chat_template(
+                prompt_message_parallel,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt"
+            )
+            prompt_length_parallel = prompt_parallel_ids.shape[1]
+            label_parallel = input_parallel_ids.clone()
+            label_parallel[:, :prompt_length_parallel] = -100
+            target_tokenized_parallel = label_parallel
+
+            # --- APPEND BOTH ---
+            jigsaw_data.append((input_comment_ids, target_tokenized_comment,
+                                 input_parallel_ids, target_tokenized_parallel))
+    
+    return jigsaw_data
+
+def get_fairness_dataset(
+    tokenizer=None
+):
+    fairness_data = []
+
+    # --- STEREOSET DATA ---
+    stereoset_data = get_stereoset_dataset(
+        tokenizer=tokenizer,
+        n_samples=64
+    )
+
+    fairness_data.extend(stereoset_data)
+
+    # -- JIGSAW DATA ---
+    jigsaw_data = get_jigsaw_dataset(
+        tokenizer=tokenizer,
+        n_samples=64
+    )
+
+    fairness_data.extend(jigsaw_data)
+
+    return fairness_data
+
 
 def get_safety_dataset(
     dataset_name: str = "walledai/AdvBench",

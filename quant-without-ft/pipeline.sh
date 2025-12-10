@@ -323,7 +323,7 @@ main() {
     process_variant \
         "Fairness Protected" \
         "$SKIP_FAIRNESS" \
-        "${MODEL_NAME}-AWQ-fairness" \
+        "${MODEL_NAME}-AWQ-fairness-Hv3" \
         "--protect_fairness"
     
     process_variant \

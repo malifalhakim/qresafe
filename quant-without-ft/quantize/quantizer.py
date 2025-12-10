@@ -264,6 +264,7 @@ class AwqQuantizer:
         for input_ids, _ in general_data:
             input_general.append(input_ids)
 
+        # NOTE: FAIRNESS DATA ALSO CONTAINS JIGSAW DATA THAT HAS STRUCTURE (COMMENT, TOXIC LABEL, PARALLEL COMMENT, NON-TOXIC LABEL)
         input_stereotypes = []
         target_stereotypes = []
         input_antistereotypes = []
@@ -429,6 +430,7 @@ class AwqQuantizer:
         for input_ids, _ in general_data_nsp:
             input_general_nsp.append(input_ids)
         
+        # NOTE: FAIRNESS DATA ALSO CONTAINS JIGSAW DATA THAT HAS STRUCTURE (COMMENT, TOXIC LABEL, PARALLEL COMMENT, NON-TOXIC LABEL)
         input_stereotypes = []
         target_stereotypes = []
         input_antistereotypes = []
