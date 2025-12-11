@@ -1,4 +1,5 @@
 import argparse
+import json
 
 from auto import AutoAWQForCausalLM
 from transformers import AutoTokenizer
@@ -71,6 +72,23 @@ def main():
     tokenizer.save_pretrained(quant_path)
 
     print(f'Model is quantized and saved at "{quant_path}"')
+
+    if not args.protect_safety and not args.protect_fairness:
+        print('Both safety and fairness protection are disabled!')
+        return
+
+    config_path = os.path.join(quant_path, "config.json")
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        if 'quantization_config' in config:
+            del config['quantization_config']
+            
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        
+        print(f'Removed "quantization_config" from config.json')
 
 if __name__ == "__main__":
     main()
