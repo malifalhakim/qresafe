@@ -230,18 +230,18 @@ def get_fairness_dataset(
     # --- STEREOSET DATA ---
     stereoset_data = get_stereoset_dataset(
         tokenizer=tokenizer,
-        n_samples=64
+        n_samples=128
     )
 
     fairness_data.extend(stereoset_data)
 
     # -- JIGSAW DATA ---
-    jigsaw_data = get_jigsaw_dataset(
-        tokenizer=tokenizer,
-        n_samples=64
-    )
+    # jigsaw_data = get_jigsaw_dataset(
+    #     tokenizer=tokenizer,
+    #     n_samples=64
+    # )
 
-    fairness_data.extend(jigsaw_data)
+    # fairness_data.extend(jigsaw_data)
 
     return fairness_data
 
