@@ -385,7 +385,7 @@ class AwqQuantizer:
                 print(f"Output stereo Shape: {logits_stereo.shape} \n| Output anti-stereo Shape: {logits_antistereo.shape}")
                 print(f"Prediction Logits stereo Shape: {prediction_logits_stereo.shape} \n| Prediction Logits anti-stereo Shape: {prediction_logits_antistereo.shape}")
 
-            loss_fair = -torch.abs(nll_stereo - nll_antistereo)
+            loss_fair = torch.abs(nll_stereo - nll_antistereo)
             loss_fair.backward()
 
             if i == 0:

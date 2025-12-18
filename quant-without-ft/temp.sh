@@ -8,7 +8,7 @@ send_notification(){
 source quant/bin/activate
 
 # --- QWEN QUANTIZATION ---
-./pipeline.sh --model_path "Qwen/Qwen2.5-7B-Instruct" 
+./pipeline.sh --model_path "Qwen/Qwen2.5-7B-Instruct" --skip_baseline --skip_safety --skip_fairness
 send_notification "Qwen 2.5B Quantization Completed"
 
 # --- GEMMA QUANTIZATION Q-TRUST ---
@@ -16,8 +16,8 @@ send_notification "Qwen 2.5B Quantization Completed"
 send_notification "Gemma 7B Q-Trust Quantization Completed"
 
 # --- LLAMA QUANTIZATION Q-TRUST ---
-./pipeline.sh --model_path "meta-llama/Llama-3.1-8B-Instruct" --skip_baseline --skip_safety --skip_fairness
-send_notification "Llama 3.1 8B Q-Trust Quantization Completed"
+# ./pipeline.sh --model_path "meta-llama/Llama-3.1-8B-Instruct" --skip_baseline --skip_safety --skip_fairness
+# send_notification "Llama 3.1 8B Q-Trust Quantization Completed"
 
 # --- DELETE /huggingface CACHE FOLDER ---
 rm -rf /huggingface/*
