@@ -284,7 +284,7 @@ def get_fairness_dataset(
     # --- STEREOSET DATA ---
     stereoset_data = get_stereoset_dataset(
         tokenizer=tokenizer,
-        n_samples=64
+        n_samples=128
     )
 
     fairness_data.extend(stereoset_data)
@@ -300,7 +300,7 @@ def get_fairness_dataset(
     # -- CROWS-PAIRS DATA ---
     crows_pairs_data = get_crows_pairs_dataset(
         tokenizer=tokenizer,
-        n_samples=64
+        n_samples=128
     )
 
     fairness_data.extend(crows_pairs_data)
