@@ -1,7 +1,8 @@
+import pandas as pd
 import torch
 import logging
 from typing import List, Optional, Union
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 
 
 def get_calib_dataset(
@@ -144,6 +145,59 @@ def get_stereoset_dataset(
 
     return fairness_data
 
+def _crows_pairs_sampling(ds, n_samples, seed=42):
+    ds.set_format(type="pandas")
+    df = ds[:]
+
+    SAMPLE_PER_CATEGORY = n_samples // 9
+    sample_df = pd.DataFrame()
+    for bias in df['bias_type'].unique():
+        bias_df = df[df['bias_type'] == bias].copy()
+        bias_df_stereo = bias_df[bias_df['stereo_antistereo'] == 'stereo']
+        bias_df_antistereo = bias_df[bias_df['stereo_antistereo'] == 'antistereo']
+
+        if len(bias_df_stereo) > SAMPLE_PER_CATEGORY // 2:
+            bias_df_stereo = bias_df_stereo.sample(SAMPLE_PER_CATEGORY // 2, random_state=seed)
+        if len(bias_df_antistereo) > SAMPLE_PER_CATEGORY // 2:
+            bias_df_antistereo = bias_df_antistereo.sample(SAMPLE_PER_CATEGORY // 2, random_state=seed)
+
+        bias_df = pd.concat([bias_df_stereo, bias_df_antistereo])
+        sample_df = pd.concat([sample_df, bias_df])
+
+    if len(sample_df) < n_samples:
+        remaining_df = df[~df.index.isin(sample_df.index)]
+        additional_samples = min(n_samples - len(sample_df), len(remaining_df))
+        sample_df = pd.concat([sample_df, remaining_df.sample(additional_samples, random_state=seed)])
+    
+    return Dataset.from_pandas(sample_df.reset_index(drop=True))
+
+def get_crows_pairs_dataset(
+    dataset_name: str = "jannalu/crows_pairs_multilingual",
+    subset: str = "english",
+    split: str = "test",
+    tokenizer=None,
+    n_samples: int = 64,
+):
+    dataset = load_dataset(dataset_name, subset, split=split)
+    dataset = dataset.shuffle(seed=42)
+    if n_samples is not None:
+        dataset = _crows_pairs_sampling(dataset, n_samples)
+    
+    fairness_data = []
+    for data in dataset:
+        stereotype_sentence = data['sent_more']
+        antistereotype_sentence = data['sent_less']
+
+        stereotype_tokens = tokenizer(stereotype_sentence, return_tensors='pt').input_ids
+        stereotype_label = stereotype_tokens.clone()
+
+        antistereotype_tokens = tokenizer(antistereotype_sentence, return_tensors='pt').input_ids
+        antistereotype_label = antistereotype_tokens.clone()
+
+        fairness_data.append((stereotype_tokens, stereotype_label, antistereotype_tokens, antistereotype_label))
+
+    return fairness_data
+
 def get_jigsaw_dataset(
     dataset_name: str = "Amadeus99/jigsaw-parallel",
     split: str = "train",
@@ -230,7 +284,7 @@ def get_fairness_dataset(
     # --- STEREOSET DATA ---
     stereoset_data = get_stereoset_dataset(
         tokenizer=tokenizer,
-        n_samples=128
+        n_samples=64
     )
 
     fairness_data.extend(stereoset_data)
@@ -242,6 +296,14 @@ def get_fairness_dataset(
     # )
 
     # fairness_data.extend(jigsaw_data)
+
+    # -- CROWS-PAIRS DATA ---
+    crows_pairs_data = get_crows_pairs_dataset(
+        tokenizer=tokenizer,
+        n_samples=64
+    )
+
+    fairness_data.extend(crows_pairs_data)
 
     return fairness_data
 
