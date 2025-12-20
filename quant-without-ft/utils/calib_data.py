@@ -298,12 +298,12 @@ def get_fairness_dataset(
     # fairness_data.extend(jigsaw_data)
 
     # -- CROWS-PAIRS DATA ---
-    crows_pairs_data = get_crows_pairs_dataset(
-        tokenizer=tokenizer,
-        n_samples=128
-    )
+    # crows_pairs_data = get_crows_pairs_dataset(
+    #     tokenizer=tokenizer,
+    #     n_samples=128
+    # )
 
-    fairness_data.extend(crows_pairs_data)
+    # fairness_data.extend(crows_pairs_data)
 
     return fairness_data
 
