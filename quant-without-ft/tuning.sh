@@ -153,7 +153,7 @@ is_default_combination() {
     local beta=$2
     
     # Check if tau is 0.6 and beta is 1 (handle floating point comparison)
-    if [[ $(echo "$tau == 0.6" | bc -l) -eq 1 ]] && [[ $(echo "$beta == 1" | bc -l) -eq 1 ]]; then
+    if [[ "$tau" == "0.6" ]] && [[ "$beta" == "1" ]]; then
         return 0  # true - is default
     fi
     return 1  # false - not default
