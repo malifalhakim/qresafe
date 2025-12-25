@@ -416,7 +416,7 @@ class AwqQuantizer:
         clear_memory()
         return importance_scores
     
-    def _calculate_trustworthinesscore(self, named_linears, cache_dir="./saved_scores"):
+    def _calculate_trustworthinesscore(self, named_linears, cache_dir="/saved_scores"):
         """
         Calculate Trustworthiness Score for each weight in the model.
         Trustworthiness_score = Fairness_score + Safety_score
