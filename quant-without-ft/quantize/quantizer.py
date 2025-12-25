@@ -416,263 +416,234 @@ class AwqQuantizer:
         clear_memory()
         return importance_scores
     
-    def _calculate_trustworthinesscore(self, named_linears):
+    def _calculate_trustworthinesscore(self, named_linears, cache_dir="./saved_scores"):
         """
         Calculate Trustworthiness Score for each weight in the model.
         Trustworthiness_score = Fairness_score + Safety_score
         """
-        # --- FAIRNESS-SCORE ---
-        print(f"Phase 1/4: Calculating general score from wikipedia NSP data...")
-        general_data_nsp = get_general_dataset(tokenizer=self.tokenizer)
-        fairness_data = get_fairness_dataset(tokenizer=self.tokenizer)
-
-        input_general_nsp = []
-        for input_ids, _ in general_data_nsp:
-            input_general_nsp.append(input_ids)
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir)
         
-        # NOTE: FAIRNESS DATA ALSO CONTAINS JIGSAW DATA THAT HAS STRUCTURE (COMMENT, TOXIC LABEL, PARALLEL COMMENT, NON-TOXIC LABEL)
-        input_stereotypes = []
-        target_stereotypes = []
-        input_antistereotypes = []
-        target_antistereotypes = []
-        for input_ids_stereotype, label_ids_stereotype, input_ids_antistereotype, label_ids_antistereotype in fairness_data:
-            input_stereotypes.append(input_ids_stereotype)
-            target_stereotypes.append(label_ids_stereotype)
-            input_antistereotypes.append(input_ids_antistereotype)
-            target_antistereotypes.append(label_ids_antistereotype)
+        path_nsp = os.path.join(cache_dir, "score_nsp.pt")
+        path_fair = os.path.join(cache_dir, "score_fairness.pt")
+        path_dolly = os.path.join(cache_dir, "score_dolly.pt")
+        path_safe = os.path.join(cache_dir, "score_safety.pt")
 
         device = get_best_device()
-        self.model.to(device)
-
         criterion = torch.nn.CrossEntropyLoss()
 
-        accumulated_scores = {
-            name: torch.zeros_like(module.weight, device='cpu')
-            for name, module in named_linears.items()
-        }
+        # =========================================================================
+        # PHASE 1: General Score (NSP)
+        # =========================================================================
+        if not os.path.exists(path_nsp):
+            print(f"Phase 1/4: Calculating general score from wikipedia NSP data...")
+            general_data_nsp = get_general_dataset(tokenizer=self.tokenizer)
+            input_general_nsp = [item[0] for item in general_data_nsp]
 
-        num_data = 0
-        clear_memory()
+            accumulated_scores = {
+                name: torch.zeros_like(module.weight, device='cpu')
+                for name, module in named_linears.items()
+            }
+            num_data = 0
 
-        for i in tqdm(range(0, len(input_general_nsp)), desc="Calculating Hessians"):
-            input_gen = input_general_nsp[i].to(device)
-
-            num_data += 1
-            self.model.train()
-
-            for module in named_linears.values():
-                module.weight.requires_grad = True
-
-            self.model.zero_grad()
-            outputs_gen = self.model(input_gen)
-            logits_gen = outputs_gen.logits
-
-            prediction_logits_gen = logits_gen[:, :-1, :]
-            target_labels_gen = input_gen[:, 1:]
-
-            loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            loss_gen.backward()
-
-            for name, module in named_linears.items():
-                if module.weight.grad is not None:
-                    squared_gradient = module.weight.grad.detach().pow(2)
-                    accumulated_scores[name] += squared_gradient.cpu()
-                    module.weight.grad = None 
-                
-                module.weight.requires_grad = False
-
-            clear_memory()
-        
-        importance_scores = {}
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
-            importance_scores[name] = acc_score / num_data
-        
-        self.model.eval()
-        clear_memory()
-        del accumulated_scores
-
-        print(f"Phase 2/4: Calculating fairness score from fairness dataset...")
-        accumulated_scores = {
-            name: torch.zeros_like(module.weight, device='cpu')
-            for name, module in named_linears.items()
-        }
-
-        num_data = 0
-        clear_memory()
-
-        for i in tqdm(range(0, len(input_stereotypes)), desc="Calculating Hessians"):
-            input_stereotype = input_stereotypes[i].to(device)
-            target_stereotype = target_stereotypes[i].to(device)
-            input_antistereotype = input_antistereotypes[i].to(device)
-            target_antistereotype = target_antistereotypes[i].to(device)
-
-            num_data += 1
-            self.model.train()
-
-            for module in named_linears.values():
-                module.weight.requires_grad = True
-
-            self.model.zero_grad()
-
-            outputs_stereo = self.model(input_stereotype)
-            logits_stereo = outputs_stereo.logits
-
-            prediction_logits_stereo = logits_stereo[:, :-1, :]
-            target_labels_stereo = target_stereotype[:, 1:]
-            nll_stereo = criterion(prediction_logits_stereo.view(-1, prediction_logits_stereo.size(-1)), target_labels_stereo.view(-1))
-
-            outputs_antistereo = self.model(input_antistereotype)
-            logits_antistereo = outputs_antistereo.logits
-
-            prediction_logits_antistereo = logits_antistereo[:, :-1, :]
-            target_labels_antistereo = target_antistereotype[:, 1:]
-            nll_antistereo = criterion(prediction_logits_antistereo.view(-1, prediction_logits_antistereo.size(-1)), target_labels_antistereo.view(-1))
-
-            loss_fair = torch.abs(nll_stereo - nll_antistereo)
-            loss_fair.backward()
-
-            for name, module in named_linears.items():
-                if module.weight.grad is not None:
-                    squared_gradient = module.weight.grad.detach().pow(2)
-                    accumulated_scores[name] += squared_gradient.cpu()
-                    module.weight.grad = None 
-                
-                module.weight.requires_grad = False
-
+            self.model.to(device)
             clear_memory()
 
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging fairness scores"):
-            fair_score = acc_score / num_data
-            importance_scores[name] = fair_score - self.beta * importance_scores[name]
+            for i in tqdm(range(0, len(input_general_nsp)), desc="Calculating General Sensitivity"):
+                input_gen = input_general_nsp[i].to(device)
+                num_data += 1
 
-        del accumulated_scores
-        self.model.eval()
-        clear_memory()
-
-        # --- SAFETY-SCORE ---
-        print(f"Phase 3/4: Calculating general score from dolly dataset...")
-        general_data_dolly = get_general_dataset(
-            dataset_name="databricks/databricks-dolly-15k",
-            subset=None,
-            split="train",
-            use_template=True,
-            text_column="response",
-            prompt_column="instruction",
-            tokenizer=self.tokenizer,
-        )
-        safety_data = get_safety_dataset(tokenizer=self.tokenizer)
-
-        input_general_dolly = []
-        target_general_dolly = []
-        for input_ids, target_ids in general_data_dolly:
-            input_general_dolly.append(input_ids)
-            target_general_dolly.append(target_ids)
-
-        input_safety = []
-        target_safety = []
-        for input_ids, target_ids in safety_data:
-            input_safety.append(input_ids)
-            target_safety.append(target_ids)
-        
-        device = get_best_device()
-        self.model.to(device)
-
-        criterion = torch.nn.CrossEntropyLoss()
-
-        accumulated_scores = {
-            name: torch.zeros_like(module.weight, device='cpu')
-            for name, module in named_linears.items()
-        }
-
-        num_data = 0
-        clear_memory()
-
-        for i in tqdm(range(0, len(input_general_dolly)), desc="Calculating Hessians"):
-            input_gen = input_general_dolly[i].to(device)
-            target_gen = target_general_dolly[i].to(device)
-
-            num_data += 1
-            self.model.train()
-
-            for module in named_linears.values():
-                module.weight.requires_grad = True
-
-            self.model.zero_grad()
-            outputs_gen = self.model(input_gen)
-            logits_gen = outputs_gen.logits
-
-            prediction_logits_gen = logits_gen[:, :-1, :]
-            target_labels_gen = target_gen[:, 1:]
-
-            loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            loss_gen.backward()
-
-            for name, module in named_linears.items():
-                if module.weight.grad is not None:
-                    squared_gradient = module.weight.grad.detach().pow(2)
-                    accumulated_scores[name] += squared_gradient.cpu()
-                    module.weight.grad = None 
+                self.model.train()
+                self.model.zero_grad()
+                for module in named_linears.values():
+                    module.weight.requires_grad = True
                 
-                module.weight.requires_grad = False
+                outputs = self.model(input_gen)
+                logits = outputs.logits[:, :-1, :]
+                labels = input_gen[:, 1:]
 
-            clear_memory()
-        
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
-            general_score = acc_score / num_data
-            importance_scores[name] -= self.beta * general_score
-        
-        self.model.eval()
-        clear_memory()
-        del accumulated_scores
+                loss = criterion(logits.reshape(-1, logits.size(-1)), labels.reshape(-1))
+                loss.backward()
 
-        print(f"Phase 4/4: Calculating safety score from safety dataset...")
-        accumulated_scores = {
-            name: torch.zeros_like(module.weight, device='cpu')
-            for name, module in named_linears.items()
-        }
-
-        num_data = 0
-        clear_memory()
-
-        for i in tqdm(range(0, len(input_safety)), desc="Calculating Hessians"):
-            input_safe = input_safety[i].to(device)
-            target_safe = target_safety[i].to(device)
-
-            num_data += 1
-            self.model.train()
-
-            for module in named_linears.values():
-                module.weight.requires_grad = True
+                for name, module in named_linears.items():
+                    if module.weight.grad is not None:
+                        accumulated_scores[name] += module.weight.grad.detach().pow(2).cpu()
+                        module.weight.grad = None
+                    module.weight.requires_grad = False
+                
+                clear_memory()
             
-            self.model.zero_grad()
-
-            outputs_safe = self.model(input_safe)
-            logits_safe = outputs_safe.logits
-
-            prediction_logits_safe = logits_safe[:, :-1, :]
-            target_labels_safe = target_safe[:, 1:]
-
-            loss_safe = criterion(prediction_logits_safe.view(-1, prediction_logits_safe.size(-1)), target_labels_safe.view(-1))
-            loss_safe.backward()
-
-            for name, module in named_linears.items():
-                if module.weight.grad is not None:
-                    squared_gradient = module.weight.grad.detach().pow(2)
-                    accumulated_scores[name] += squared_gradient.cpu()
-                    module.weight.grad = None 
-                
-                module.weight.requires_grad = False
-
+            score_nsp = {name: acc_score / num_data for name, acc_score in accumulated_scores.items()}
+            torch.save(score_nsp, path_nsp)
+            del accumulated_scores, score_nsp, input_general_nsp
             clear_memory()
+        else:
+            print(f"Phase 1/4: NSP score found in cache. Skipping.")
         
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging safety scores"):
-            safety_score = acc_score / num_data
-            importance_scores[name] += safety_score
+        # =========================================================================
+        # PHASE 2: Fairness Score
+        # =========================================================================
+        if not os.path.exists(path_fair):
+            print(f"Phase 2/4: Calculating & Saving Fairness score...")
+            fairness_data = get_fairness_dataset(tokenizer=self.tokenizer)
+            input_stereotypes = [x[0] for x in fairness_data]
+            target_stereotypes = [x[1] for x in fairness_data]
+            input_antistereotypes = [x[2] for x in fairness_data]
+            target_antistereotypes = [x[3] for x in fairness_data]
+
+            accumulated_scores = {name: torch.zeros_like(module.weight, device='cpu') for name, module in named_linears.items()}
+            num_data = 0
+            self.model.to(device)
+            clear_memory()
+
+            for i in tqdm(range(len(input_stereotypes)), desc="Calc Fairness Sensitivity"):
+                inp_s = input_stereotypes[i].to(device)
+                tar_s = target_stereotypes[i].to(device)
+                inp_a = input_antistereotypes[i].to(device)
+                tar_a = target_antistereotypes[i].to(device)
+                
+                num_data += 1
+                self.model.train()
+                self.model.zero_grad()
+                for module in named_linears.values(): module.weight.requires_grad = True
+
+                # Stereo Forward
+                out_s = self.model(inp_s).logits[:, :-1, :]
+                nll_s = criterion(out_s.reshape(-1, out_s.size(-1)), tar_s[:, 1:].reshape(-1))
+
+                # Anti-Stereo Forward
+                out_a = self.model(inp_a).logits[:, :-1, :]
+                nll_a = criterion(out_a.reshape(-1, out_a.size(-1)), tar_a[:, 1:].reshape(-1))
+
+                loss_fair = torch.abs(nll_s - nll_a)
+                loss_fair.backward()
+
+                for name, module in named_linears.items():
+                    if module.weight.grad is not None:
+                        accumulated_scores[name] += module.weight.grad.detach().pow(2).cpu()
+                        module.weight.grad = None
+                    module.weight.requires_grad = False
+
+            score_fair = {name: acc / num_data for name, acc in accumulated_scores.items()}
+            torch.save(score_fair, path_fair)
+            del accumulated_scores, score_fair, input_stereotypes, input_antistereotypes
+            clear_memory()
+        else:
+            print("Phase 2/4: Fairness score found in cache. Skipping.")
+
+
+        # =========================================================================
+        # PHASE 3: General Score (Dolly)
+        # =========================================================================
+        if not os.path.exists(path_dolly):
+            print(f"Phase 3/4: Calculating & Saving Dolly score...")
+            general_data_dolly = get_general_dataset(
+                dataset_name="databricks/databricks-dolly-15k",
+                subset=None, split="train", use_template=True,
+                text_column="response", prompt_column="instruction", tokenizer=self.tokenizer
+            )
+            # Assuming get_general_dataset returns list of (input, target)
+            input_dolly = [x[0] for x in general_data_dolly]
+            target_dolly = [x[1] for x in general_data_dolly]
+
+            accumulated_scores = {name: torch.zeros_like(module.weight, device='cpu') for name, module in named_linears.items()}
+            num_data = 0
+            self.model.to(device)
+            clear_memory()
+
+            for i in tqdm(range(len(input_dolly)), desc="Calc Dolly Sensitivity"):
+                inp = input_dolly[i].to(device)
+                tar = target_dolly[i].to(device)
+                
+                num_data += 1
+                self.model.train()
+                self.model.zero_grad()
+                for module in named_linears.values(): module.weight.requires_grad = True
+
+                out = self.model(inp).logits[:, :-1, :]
+                loss = criterion(out.reshape(-1, out.size(-1)), tar[:, 1:].reshape(-1))
+                loss.backward()
+
+                for name, module in named_linears.items():
+                    if module.weight.grad is not None:
+                        accumulated_scores[name] += module.weight.grad.detach().pow(2).cpu()
+                        module.weight.grad = None
+                    module.weight.requires_grad = False
+            
+            score_dolly = {name: acc / num_data for name, acc in accumulated_scores.items()}
+            torch.save(score_dolly, path_dolly)
+            del accumulated_scores, score_dolly, input_dolly
+            clear_memory()
+        else:
+            print("Phase 3/4: Dolly score found in cache. Skipping.")
+
+        # =========================================================================
+        # PHASE 4: Safety Score
+        # =========================================================================
+        if not os.path.exists(path_safe):
+            print(f"Phase 4/4: Calculating & Saving Safety score...")
+            safety_data = get_safety_dataset(tokenizer=self.tokenizer)
+            input_safe = [x[0] for x in safety_data]
+            target_safe = [x[1] for x in safety_data]
+
+            accumulated_scores = {name: torch.zeros_like(module.weight, device='cpu') for name, module in named_linears.items()}
+            num_data = 0
+            self.model.to(device)
+            clear_memory()
+
+            for i in tqdm(range(len(input_safe)), desc="Calc Safety Sensitivity"):
+                inp = input_safe[i].to(device)
+                tar = target_safe[i].to(device)
+                
+                num_data += 1
+                self.model.train()
+                self.model.zero_grad()
+                for module in named_linears.values(): module.weight.requires_grad = True
+
+                out = self.model(inp).logits[:, :-1, :]
+                loss = criterion(out.reshape(-1, out.size(-1)), tar[:, 1:].reshape(-1))
+                loss.backward()
+
+                for name, module in named_linears.items():
+                    if module.weight.grad is not None:
+                        accumulated_scores[name] += module.weight.grad.detach().pow(2).cpu()
+                        module.weight.grad = None
+                    module.weight.requires_grad = False
+
+            score_safe = {name: acc / num_data for name, acc in accumulated_scores.items()}
+            torch.save(score_safe, path_safe)
+            del accumulated_scores, score_safe, input_safe
+            clear_memory()
+        else:
+            print("Phase 4/4: Safety score found in cache. Skipping.")
         
-        del accumulated_scores
-        self.model.eval()
-        clear_memory()
-        return importance_scores
+        # =========================================================================
+        # PHASE 5: ASSEMBLY
+        # =========================================================================
+        print("Assembling final scores ...")
+        
+        # 1. Start with Fairness
+        final_scores = torch.load(path_fair)
+        
+        # 2. Add Safety
+        temp_scores = torch.load(path_safe)
+        for name in final_scores:
+            final_scores[name] += temp_scores[name]
+        del temp_scores # Free RAM immediately
+        
+        # 3. Subtract Beta * NSP
+        temp_scores = torch.load(path_nsp)
+        for name in final_scores:
+            final_scores[name] -= (self.beta * temp_scores[name])
+        del temp_scores # Free RAM
+        
+        # 4. Subtract Beta * Dolly
+        temp_scores = torch.load(path_dolly)
+        for name in final_scores:
+            final_scores[name] -= (self.beta * temp_scores[name])
+        del temp_scores # Free RAM
+
+        return final_scores
 
     def pseudo_quantize_tensor(self, w: torch.Tensor):
         org_w_shape = w.shape
