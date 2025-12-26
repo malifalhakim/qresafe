@@ -317,7 +317,7 @@ main() {
     process_variant \
         "Safety Protected" \
         "$SKIP_SAFETY" \
-        "${MODEL_NAME}-AWQ-safety" \
+        "${MODEL_NAME}-AWQ-Qresafe" \
         "--protect_safety"
     
     process_variant \

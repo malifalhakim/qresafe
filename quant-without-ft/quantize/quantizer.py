@@ -83,36 +83,24 @@ class AwqQuantizer:
         self.tau = tau
         self.saved_scores_dir = "./saved_scores"
         self.model_name = model_name
-
+    
+    # ==== Q-Resafe VERSION ====
     def _calculate_safescore(self, named_linears):
         """
-        Calculate safe score based on adaptation of "FairQuantize" method. 
-        Importance_score = H_general - Beta * H_safety, where H is hessian.
+        Just for comparison with proposed TrustScore method.
         """
+        for i in range(5):
+            print("WARNING: This calculates safety scores with Q-resafe method. To use proposed safescore, uncomment below method and comment this one.")
+        
         print(f"Calculating safety scores for {len(named_linears)} layers")
-        general_data = get_general_dataset(
-            dataset_name="databricks/databricks-dolly-15k",
-            subset=None,
-            split="train",
-            use_template=True,
-            text_column="response",
-            prompt_column="instruction",
-            tokenizer=self.tokenizer,
-        )
         safety_data = get_safety_dataset(tokenizer=self.tokenizer)
 
-        input_general = []
-        target_general = []
-        for input_ids, target_ids in general_data:
-            input_general.append(input_ids)
-            target_general.append(target_ids)
-        
         input_safety = []
         target_safety = []
         for input_ids, target_ids in safety_data:
             input_safety.append(input_ids)
             target_safety.append(target_ids)
-
+        
         device = get_best_device()
         self.model.to(device)
 
@@ -126,72 +114,7 @@ class AwqQuantizer:
         num_data = 0
         clear_memory()
 
-        for i in tqdm(range(0, len(input_general)), desc="Calculating Hessians"):
-            input_gen = input_general[i].to(device)
-            target_gen = target_general[i].to(device)
-
-            num_data += 1
-            self.model.train()
-
-            for module in named_linears.values():
-                module.weight.requires_grad = True
-
-            self.model.zero_grad()
-            outputs_gen = self.model(input_gen)
-            logits_gen = outputs_gen.logits
-
-            prediction_logits_gen = logits_gen[:, :-1, :]
-            target_labels_gen = target_gen[:, 1:]
-
-            if i == 0:
-                print(f"Input Gen Token IDs: {input_gen}")
-                print(f"Target Gen Token IDs: {target_gen}")
-                print(f"Prediction Logits Shape: {prediction_logits_gen.shape}")
-                print(f"Target Labels Shape: {target_labels_gen.shape}")
-                print(f"Input Gen Shape: {input_gen.shape}")
-                print(f"Logits Shape: {logits_gen.shape}")
-                print(f"Target Gen Shape: {target_gen.shape}")
-
-            assert prediction_logits_gen.size(1) == target_labels_gen.size(1), \
-                f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
-            
-            loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
-            loss_gen.backward()
-
-            if i == 0:
-                print(f"\nFirst general batch loss: {loss_gen.item():.6f}")
-                print(f"Loss requires_grad: {loss_gen.requires_grad}")
-                print(f"Logits requires_grad: {logits_gen.requires_grad}")
-                print(f"Target Token IDs: {target_labels_gen[0].tolist()}")
-                print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist() if tid != -100]}")
-
-            for name, module in named_linears.items():
-                if module.weight.grad is not None:
-                    squared_gradient = module.weight.grad.detach().pow(2)
-                    accumulated_scores[name] += squared_gradient.cpu()
-                    module.weight.grad = None 
-                
-                module.weight.requires_grad = False
-
-            clear_memory()
-        
-        importance_scores = {}
-        for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
-            importance_scores[name] = acc_score / num_data
-        
-        self.model.eval()
-        clear_memory()
-        del accumulated_scores
-
-        accumulated_scores = {
-            name: torch.zeros_like(module.weight, device='cpu')
-            for name, module in named_linears.items()
-        }
-
-        num_data = 0
-        clear_memory()
-
-        for i in tqdm(range(0, len(input_safety)), desc="Calculating Hessians"):
+        for i in tqdm(range(0, len(input_safety)), desc="Calculating Safety Importance Scores"):
             input_safe = input_safety[i].to(device)
             target_safe = target_safety[i].to(device)
 
@@ -233,23 +156,190 @@ class AwqQuantizer:
 
             for name, module in named_linears.items():
                 if module.weight.grad is not None:
-                    squared_gradient = module.weight.grad.detach().pow(2)
-                    accumulated_scores[name] += squared_gradient.cpu()
+                    snip_score = torch.abs(module.weight.detach() * module.weight.grad.detach())
+                    accumulated_scores[name] += snip_score.cpu()
                     module.weight.grad = None 
                 
                 module.weight.requires_grad = False
 
             clear_memory()
-
+        
         print("Calculating final importance scores...")
+        safe_score = {}
         for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
-            safe_score = acc_score / num_data
-            importance_scores[name] = safe_score - self.beta * importance_scores[name]
+            safe_score[name] = acc_score / num_data
 
         del accumulated_scores
         self.model.eval()
         clear_memory()
-        return importance_scores
+        return safe_score
+
+    # def _calculate_safescore(self, named_linears):
+    #     """
+    #     Calculate safe score based on adaptation of "FairQuantize" method. 
+    #     Importance_score = H_general - Beta * H_safety, where H is hessian.
+    #     """
+    #     print(f"Calculating safety scores for {len(named_linears)} layers")
+    #     general_data = get_general_dataset(
+    #         dataset_name="databricks/databricks-dolly-15k",
+    #         subset=None,
+    #         split="train",
+    #         use_template=True,
+    #         text_column="response",
+    #         prompt_column="instruction",
+    #         tokenizer=self.tokenizer,
+    #     )
+    #     safety_data = get_safety_dataset(tokenizer=self.tokenizer)
+
+    #     input_general = []
+    #     target_general = []
+    #     for input_ids, target_ids in general_data:
+    #         input_general.append(input_ids)
+    #         target_general.append(target_ids)
+        
+    #     input_safety = []
+    #     target_safety = []
+    #     for input_ids, target_ids in safety_data:
+    #         input_safety.append(input_ids)
+    #         target_safety.append(target_ids)
+
+    #     device = get_best_device()
+    #     self.model.to(device)
+
+    #     criterion = torch.nn.CrossEntropyLoss()
+
+    #     accumulated_scores = {
+    #         name: torch.zeros_like(module.weight, device='cpu')
+    #         for name, module in named_linears.items()
+    #     }
+
+    #     num_data = 0
+    #     clear_memory()
+
+    #     for i in tqdm(range(0, len(input_general)), desc="Calculating Hessians"):
+    #         input_gen = input_general[i].to(device)
+    #         target_gen = target_general[i].to(device)
+
+    #         num_data += 1
+    #         self.model.train()
+
+    #         for module in named_linears.values():
+    #             module.weight.requires_grad = True
+
+    #         self.model.zero_grad()
+    #         outputs_gen = self.model(input_gen)
+    #         logits_gen = outputs_gen.logits
+
+    #         prediction_logits_gen = logits_gen[:, :-1, :]
+    #         target_labels_gen = target_gen[:, 1:]
+
+    #         if i == 0:
+    #             print(f"Input Gen Token IDs: {input_gen}")
+    #             print(f"Target Gen Token IDs: {target_gen}")
+    #             print(f"Prediction Logits Shape: {prediction_logits_gen.shape}")
+    #             print(f"Target Labels Shape: {target_labels_gen.shape}")
+    #             print(f"Input Gen Shape: {input_gen.shape}")
+    #             print(f"Logits Shape: {logits_gen.shape}")
+    #             print(f"Target Gen Shape: {target_gen.shape}")
+
+    #         assert prediction_logits_gen.size(1) == target_labels_gen.size(1), \
+    #             f"Prediction length {prediction_logits_gen.size(1)} does not match target length {target_labels_gen.size(1)}"
+            
+    #         loss_gen = criterion(prediction_logits_gen.reshape(-1, prediction_logits_gen.size(-1)), target_labels_gen.reshape(-1))
+    #         loss_gen.backward()
+
+    #         if i == 0:
+    #             print(f"\nFirst general batch loss: {loss_gen.item():.6f}")
+    #             print(f"Loss requires_grad: {loss_gen.requires_grad}")
+    #             print(f"Logits requires_grad: {logits_gen.requires_grad}")
+    #             print(f"Target Token IDs: {target_labels_gen[0].tolist()}")
+    #             print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_gen[0].tolist() if tid != -100]}")
+
+    #         for name, module in named_linears.items():
+    #             if module.weight.grad is not None:
+    #                 squared_gradient = module.weight.grad.detach().pow(2)
+    #                 accumulated_scores[name] += squared_gradient.cpu()
+    #                 module.weight.grad = None 
+                
+    #             module.weight.requires_grad = False
+
+    #         clear_memory()
+        
+    #     importance_scores = {}
+    #     for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging general scores"):
+    #         importance_scores[name] = acc_score / num_data
+        
+    #     self.model.eval()
+    #     clear_memory()
+    #     del accumulated_scores
+
+    #     accumulated_scores = {
+    #         name: torch.zeros_like(module.weight, device='cpu')
+    #         for name, module in named_linears.items()
+    #     }
+
+    #     num_data = 0
+    #     clear_memory()
+
+    #     for i in tqdm(range(0, len(input_safety)), desc="Calculating Hessians"):
+    #         input_safe = input_safety[i].to(device)
+    #         target_safe = target_safety[i].to(device)
+
+    #         num_data += 1
+    #         self.model.train()
+
+    #         for module in named_linears.values():
+    #             module.weight.requires_grad = True
+            
+    #         self.model.zero_grad()
+
+    #         outputs_safe = self.model(input_safe)
+    #         logits_safe = outputs_safe.logits
+
+    #         prediction_logits_safe = logits_safe[:, :-1, :]
+    #         target_labels_safe = target_safe[:, 1:]
+
+    #         if i == 0:
+    #             print(f"Input Safe Token IDs: {input_safe}")
+    #             print(f"Target Safe Token IDs: {target_safe}")
+    #             print(f"Prediction Logits Shape: {prediction_logits_safe.shape}")
+    #             print(f"Target Labels Shape: {target_labels_safe.shape}")
+    #             print(f"Input Safe Shape: {input_safe.shape}")
+    #             print(f"Logits Shape: {logits_safe.shape}")
+    #             print(f"Target Safe Shape: {target_safe.shape}")
+
+    #         assert prediction_logits_safe.size(1) == target_labels_safe.size(1), \
+    #             f"Prediction length {prediction_logits_safe.size(1)} does not match target length {target_labels_safe.size(1)}"
+            
+    #         loss_safe = criterion(prediction_logits_safe.view(-1, prediction_logits_safe.size(-1)), target_labels_safe.view(-1))
+    #         loss_safe.backward()
+
+    #         if i == 0:
+    #             print(f"\nFirst safety batch loss: {loss_safe.item():.6f}")
+    #             print(f"Loss requires_grad: {loss_safe.requires_grad}")
+    #             print(f"Logits requires_grad: {logits_safe.requires_grad}")
+    #             print(f"Target Token IDs: {target_labels_safe[0].tolist()}")
+    #             print(f"Target Words: {[self.tokenizer.decode([tid]) for tid in target_labels_safe[0].tolist() if tid != -100]}")
+
+    #         for name, module in named_linears.items():
+    #             if module.weight.grad is not None:
+    #                 squared_gradient = module.weight.grad.detach().pow(2)
+    #                 accumulated_scores[name] += squared_gradient.cpu()
+    #                 module.weight.grad = None 
+                
+    #             module.weight.requires_grad = False
+
+    #         clear_memory()
+
+    #     print("Calculating final importance scores...")
+    #     for name, acc_score in tqdm(accumulated_scores.items(), desc="Averaging importance scores"):
+    #         safe_score = acc_score / num_data
+    #         importance_scores[name] = safe_score - self.beta * importance_scores[name]
+
+    #     del accumulated_scores
+    #     self.model.eval()
+    #     clear_memory()
+    #     return importance_scores
     
     def _calculate_fairscore(self, named_linears):
         """
